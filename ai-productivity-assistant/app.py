@@ -7,15 +7,166 @@ from agent import (
 )
 from scheduler import display_schedule, display_schedule_timeline, save_schedule, create_schedule_summary
 
-# Load environment variables
-load_dotenv()
-
-# Streamlit app configuration
+# Streamlit app configuration (must be first Streamlit command)
 st.set_page_config(
     page_title="AI Productivity Assistant",
     page_icon="🤖",
     layout="wide"
 )
+
+# Load environment variables
+load_dotenv()
+
+# Dark mode toggle (in sidebar)
+dark_mode = st.sidebar.checkbox("🌙 Dark Mode")
+
+# Apply dark or light mode styles
+def apply_mode_styles():
+    if dark_mode:
+        st.markdown(
+            """
+            <style>
+            /* Whole page and main container */
+            html, body, .main, .block-container {
+                background-color: #121212 !important;
+                color: #e0e0e0 !important;
+            }
+
+            /* Sidebar */
+            [data-testid="stSidebar"] {
+                background-color: #1e1e1e !important;
+                color: #e0e0e0 !important;
+            }
+
+            /* General text */
+            p, span, h1, h2, h3, h4, h5, h6, label, div, li {
+                color: #e0e0e0 !important;
+            }
+
+            /* Input fields */
+            input, textarea {
+                background-color: #222 !important;
+                color: #eee !important;
+                border: 1px solid #555 !important;
+            }
+
+            /* Dropdowns */
+            .stSelectbox div[data-baseweb="select"] {
+                background-color: #222 !important;
+                color: #eee !important;
+            }
+
+            /* Fix dropdown menu items */
+            .stSelectbox div[data-baseweb="select"] * {
+                color: #eee !important;
+                background-color: #222 !important;
+            }
+
+            /* Placeholder text */
+            input::placeholder, textarea::placeholder {
+                color: #bbb !important;
+                opacity: 1 !important;
+            }
+
+            /* Buttons */
+            .stButton > button {
+                background-color: #333 !important;
+                color: white !important;
+                border: none !important;
+            }
+            .stButton > button:hover {
+                background-color: #555 !important;
+            }
+
+            /* Expander */
+            .streamlit-expanderHeader {
+                background-color: #1e1e1e !important;
+                color: #e0e0e0 !important;
+            }
+            .streamlit-expanderContent {
+                background-color: #121212 !important;
+                color: #e0e0e0 !important;
+            }
+
+            /* Scrollbars */
+            ::-webkit-scrollbar {
+                width: 8px;
+            }
+            ::-webkit-scrollbar-track {
+                background: #121212;
+            }
+            ::-webkit-scrollbar-thumb {
+                background-color: #444;
+                border-radius: 10px;
+            }
+
+            /* Header (top navigation or toolbar) */
+            header[data-testid="stHeader"] {
+                background-color: #121212 !important;
+            }
+
+            /* Dropdown popups */
+            div[data-testid="stDropdown"] {
+                background-color: #222 !important;
+                color: #eee !important;
+            }
+
+            /* Dropdown menu list */
+            li[role="listbox"] {
+                background-color: #222 !important;
+                color: #eee !important;
+            }
+
+            /* Dropdown items */
+            li[role="listbox"] li {
+                background-color: #222 !important;
+                color: #eee !important;
+            }
+
+            /* Fix focus/hover states */
+            li[role="listbox"] li:hover {
+                background-color: #333 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+            
+        )
+
+    else:
+        st.markdown(
+            """
+            <style>
+            html, body, .main, .block-container {
+                background-color: white !important;
+                color: black !important;
+            }
+            [data-testid="stSidebar"] {
+                background-color: white !important;
+                color: black !important;
+            }
+            .stButton > button {
+                background-color: #f0f0f0 !important;
+                color: black !important;
+                border: none !important;
+            }
+            input, textarea, select {
+                background-color: white !important;
+                color: black !important;
+                border: 1px solid #ccc !important;
+            }
+            input::placeholder, textarea::placeholder {
+                color: #999 !important;
+                opacity: 1 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+apply_mode_styles()
+
+# --- Rest of your app below ---
 
 # App title and description
 st.title("🤖 AI Productivity Assistant")
@@ -392,7 +543,7 @@ elif page == "🔧 Schedule Improver":
         st.info("💡 Generate a schedule first using the Schedule Generator to use this feature.")
         if st.button("📅 Go to Schedule Generator"):
             st.session_state.page = "📅 Schedule Generator"
-            st.rerun()
+            st.experimental_rerun()
 
 # Footer
 st.markdown("---")

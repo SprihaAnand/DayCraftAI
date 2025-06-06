@@ -7,15 +7,15 @@ from agent import (
     prioritize_tasks, generate_focus_session, create_weekly_plan
 )
 from scheduler import display_schedule, display_schedule_timeline, save_schedule, create_schedule_summary
-static_path = "google-site-verification: google7fa79dc19a0e1ce3.html"
-
-st.markdown(f'[Google Site Verification](/{static_path})', unsafe_allow_html=True)
 # Streamlit app configuration (must be first Streamlit command)
 st.set_page_config(
     page_title="AI Productivity Assistant",
     page_icon="🤖",
     layout="wide"
 )
+static_path = "google-site-verification: google7fa79dc19a0e1ce3.html"
+
+st.markdown(f'[Google Site Verification](/{static_path})', unsafe_allow_html=True)
 
 # Load environment variables
 load_dotenv()

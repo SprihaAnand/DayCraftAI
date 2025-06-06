@@ -7,16 +7,9 @@ from agent import (
     prioritize_tasks, generate_focus_session, create_weekly_plan
 )
 from scheduler import display_schedule, display_schedule_timeline, save_schedule, create_schedule_summary
-def add_google_verification(verification_code):
-    components.html(
-        f"""
-        <head>
-            <meta name="google-site-verification" content="XX-AXaVhktY4Z8Nbo0TQuNE-JfiWLsADb0Azfs8Ijj8" />
-        </head>
-        """,
-        height=0,  # Prevent iframe from displaying a scrollbar
-        width=0,
-    )
+static_path = "google-site-verification: google7fa79dc19a0e1ce3.html"
+
+st.markdown(f'[Google Site Verification](/{static_path})', unsafe_allow_html=True)
 # Streamlit app configuration (must be first Streamlit command)
 st.set_page_config(
     page_title="AI Productivity Assistant",

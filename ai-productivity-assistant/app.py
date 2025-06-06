@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 from dotenv import load_dotenv
 from agent import (
@@ -6,7 +7,16 @@ from agent import (
     prioritize_tasks, generate_focus_session, create_weekly_plan
 )
 from scheduler import display_schedule, display_schedule_timeline, save_schedule, create_schedule_summary
-
+def add_google_verification(verification_code):
+    components.html(
+        f"""
+        <head>
+            <meta name="google-site-verification" content="XX-AXaVhktY4Z8Nbo0TQuNE-JfiWLsADb0Azfs8Ijj8" />
+        </head>
+        """,
+        height=0,  # Prevent iframe from displaying a scrollbar
+        width=0,
+    )
 # Streamlit app configuration (must be first Streamlit command)
 st.set_page_config(
     page_title="AI Productivity Assistant",

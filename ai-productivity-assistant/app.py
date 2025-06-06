@@ -13,9 +13,7 @@ st.set_page_config(
     page_icon="🤖",
     layout="wide"
 )
-static_path = "google-site-verification: google7fa79dc19a0e1ce3.html"
 
-st.markdown(f'[Google Site Verification](/{static_path})', unsafe_allow_html=True)
 
 # Load environment variables
 load_dotenv()

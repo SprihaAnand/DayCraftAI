@@ -47,9 +47,6 @@ def generate_schedule(prompt):
     except Exception as e:
         return f"Error generating schedule: {str(e)}"
 
-# ... (keep the rest of your functions unchanged) ...
-# analyze_productivity, suggest_improvements, prioritize_tasks, generate_focus_session, create_weekly_plan
-
 def analyze_productivity(tasks_completed, time_spent):
     """
     Analyze productivity metrics and provide insights

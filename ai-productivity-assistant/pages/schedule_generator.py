@@ -4,8 +4,36 @@ from scheduler import display_schedule, create_schedule_summary
 from components.mcp import ProductivityMCP
 import pandas as pd
 from datetime import datetime, timedelta
+import io
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 mcp = ProductivityMCP()
+
+def generate_schedule_pdf(schedule_text):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    lines = schedule_text.split('\n')
+    y = height - 50  # Start from top
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "Your Personalized Schedule")
+    y -= 30
+
+    c.setFont("Helvetica", 12)
+    for line in lines:
+        if y < 50:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica", 12)
+        c.drawString(50, y, line)
+        y -= 20
+
+    c.save()
+    buffer.seek(0)
+    return buffer
 
 def schedule_generator_page():
     st.header("📅 Daily Schedule Generator")
@@ -43,40 +71,60 @@ def schedule_generator_page():
                         'energy_level': energy_level
                     })
 
-                    display_schedule(schedule)
-                    st.subheader("📊 Schedule Visualization")
-                    schedule_blocks = mcp.parse_schedule_data(schedule)
+    if "current_schedule" in st.session_state and st.session_state.current_schedule:
+        schedule = st.session_state.current_schedule
 
-                    if schedule_blocks:
-                        timeline_data = []
-                        current_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
-                        for i, block in enumerate(schedule_blocks[:6]):
-                            start_time = current_time + timedelta(hours=i * 1.5)
-                            end_time = start_time + timedelta(hours=1)
-                            timeline_data.append({
-                                'task': block['task'][:30] + '...' if len(block['task']) > 30 else block['task'],
-                                'category': block['category'],
-                                'start_time': start_time,
-                                'end_time': end_time
-                            })
+        st.subheader("Current Schedule:")
+        with st.expander("View Current Schedule", expanded=True):
+            st.write(st.session_state.current_schedule)
+        # ⬇️ Download button
+        st.download_button(
+            label="📥 Download Schedule as TXT",
+            data=st.session_state.current_schedule,
+            file_name="my_schedule.txt",
+            mime="text/plain"
+        )
 
-                        df = pd.DataFrame(timeline_data)
-                        st.plotly_chart(mcp.create_schedule_timeline(df.to_dict('records')), use_container_width=True)
+        pdf_file = generate_schedule_pdf(schedule)
+        st.download_button(
+            label="📄 Download Schedule as PDF",
+            data=pdf_file,
+            file_name="my_schedule.pdf",
+            mime="application/pdf"
+        )
+        st.subheader("📊 Schedule Visualization")
+        schedule_blocks = mcp.parse_schedule_data(schedule)
 
-                        category_counts = df['category'].value_counts()
-                        fig_pie = mcp.create_task_category_pie(category_counts)
-                        st.plotly_chart(fig_pie, use_container_width=True)
+        if schedule_blocks:
+            timeline_data = []
+            current_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+            for i, block in enumerate(schedule_blocks[:6]):
+                start_time = current_time + timedelta(hours=i * 1.5)
+                end_time = start_time + timedelta(hours=1)
+                timeline_data.append({
+                    'task': block['task'][:30] + '...' if len(block['task']) > 30 else block['task'],
+                    'category': block['category'],
+                    'start_time': start_time,
+                    'end_time': end_time
+                })
 
-                    create_schedule_summary(schedule)
+            df = pd.DataFrame(timeline_data)
+            st.plotly_chart(mcp.create_schedule_timeline(df.to_dict('records')), use_container_width=True)
+
+            category_counts = df['category'].value_counts()
+            fig_pie = mcp.create_task_category_pie(category_counts)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+            create_schedule_summary(schedule)
 
     with col2:
         st.subheader("💡 Tips for better schedules:")
         st.markdown("""
-        - **Be specific** about meeting times
-        - **Mention energy levels**
-        - **Include buffer time**
-        - **Add breaks and meals**
-        - **Specify deadlines** and priorities
-        - **Share constraints** (commute, family time)
+        - **Be specific** about meeting/class times  
+        - **Mention energy levels**  
+        - **Include buffer time**  
+        - **Add breaks and meals**  
+        - **Specify deadlines** and priorities  
+        - **Share constraints** (commute, family time)  
         - **Include preferred work styles**
         """)

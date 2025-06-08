@@ -14,6 +14,9 @@ class ProductivityMCP:
         }
 
     def parse_schedule_data(self, schedule_text):
+        if not schedule_text:
+            return []
+
         time_blocks = []
         lines = schedule_text.split('\n')
         for line in lines:

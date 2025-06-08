@@ -56,7 +56,7 @@ elif page == "📈 Visualization Dashboard":
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center'>
-    <p>Made with ❤️ using Streamlit, Google Gemini AI, and MCP for Advanced Visualizations</p>
+    <p>Made with ❤️ using Streamlit, Google Gemini AI</p>
     <p><small>Enhanced with Interactive Charts • Real-time Analytics • Smart Visualizations</small></p>
 </div>
 """, unsafe_allow_html=True)

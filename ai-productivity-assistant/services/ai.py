@@ -1,0 +1,444 @@
+"""Provider-backed, privacy-conscious AI planning for DayCraft.
+
+DayCraft keeps the part of scheduling that must be correct local: the model can
+prioritize only the user's submitted task IDs, while :mod:`services.planning`
+places those tasks around real commitments. An AI provider is intentionally
+required for creating a day plan; DayCraft must never present a local heuristic
+as an AI-crafted plan.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import date
+from typing import Any
+
+from services.planning import ScheduleBlock, plan_as_markdown, task_sort_key
+
+GEMINI_PROVIDER = "gemini"
+OPENAI_PROVIDER = "openai"
+SUPPORTED_PROVIDERS = {GEMINI_PROVIDER, OPENAI_PROVIDER}
+
+_DAY_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ordered_task_ids": {"type": "array", "items": {"type": "integer"}},
+        "focus_theme": {"type": "string"},
+        "plan_note": {"type": "string"},
+    },
+    "required": ["ordered_task_ids", "focus_theme", "plan_note"],
+    "additionalProperties": False,
+}
+
+
+class AIServiceError(RuntimeError):
+    """Base error for safe, user-facing AI service failures."""
+
+
+class AIConfigurationError(AIServiceError):
+    """Raised when a user has not selected a valid provider and API key."""
+
+
+class AIProviderError(AIServiceError):
+    """Raised when a configured provider cannot be used by this deployment."""
+
+
+class AIPlanningError(AIServiceError):
+    """Raised when a provider cannot produce a safe daily-plan ordering."""
+
+
+@dataclass(frozen=True)
+class AIResponse:
+    content: str
+    provider: str
+    used_fallback: bool
+    notice: str | None = None
+
+
+@dataclass(frozen=True)
+class DayPlanAdvice:
+    """A validated ordering and explanation used by the local time scheduler."""
+
+    ordered_task_ids: list[int]
+    focus_theme: str
+    plan_note: str
+    provider: str
+    used_fallback: bool
+    notice: str | None = None
+
+
+def _clean(value: object | None) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _normalise_provider(value: object | None) -> str | None:
+    normalized = _clean(value).lower().replace(" ", "")
+    aliases = {"google": GEMINI_PROVIDER, "gemini": GEMINI_PROVIDER, "openai": OPENAI_PROVIDER}
+    return aliases.get(normalized)
+
+
+def parse_day_plan_payload(
+    payload: str, allowed_task_ids: set[int], fallback_order: list[int]
+) -> tuple[list[int], str, str]:
+    """Validate provider JSON before it has any influence on the schedule.
+
+    The provider can select only IDs from the user's submitted task list.
+    Missing or duplicate IDs are discarded; every real task is appended in a
+    predictable local order, so a partial response can never hide work from
+    the planner.
+    """
+    value = json.loads(payload)
+    if not isinstance(value, dict):
+        raise ValueError("The AI provider did not return a plan object.")
+
+    raw_ids = value.get("ordered_task_ids", [])
+    if not isinstance(raw_ids, list):
+        raise ValueError("The AI provider did not return a task order.")
+
+    ordered_ids: list[int] = []
+    for raw_id in raw_ids:
+        if isinstance(raw_id, bool):
+            continue
+        try:
+            task_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if task_id in allowed_task_ids and task_id not in ordered_ids:
+            ordered_ids.append(task_id)
+    ordered_ids.extend(task_id for task_id in fallback_order if task_id not in ordered_ids)
+
+    focus_theme = str(value.get("focus_theme") or "Protect the most important block first.").strip()
+    plan_note = str(value.get("plan_note") or "The schedule uses your real available time.").strip()
+    return ordered_ids, focus_theme[:180], plan_note[:500]
+
+
+class AIService:
+    """Use Gemini or OpenAI without persisting an end user's API key.
+
+    ``api_key``, ``provider``, and ``model`` are intended for session-scoped
+    user settings. When omitted, the service reads deployment environment
+    variables. It deliberately imports each provider SDK only if that provider
+    is selected, so an installation can support either one independently.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        requested_provider = _clean(provider) or _clean(
+            os.getenv("DAYCRAFT_AI_PROVIDER") or os.getenv("AI_PROVIDER")
+        )
+        inferred_provider = _normalise_provider(requested_provider)
+        if requested_provider and inferred_provider is None:
+            self.provider: str | None = None
+            self._invalid_provider = requested_provider
+        else:
+            # Gemini is the primary DayCraft integration, while a deployment
+            # with only OPENAI_API_KEY transparently selects OpenAI.
+            self.provider = inferred_provider or (
+                OPENAI_PROVIDER if _clean(os.getenv("OPENAI_API_KEY")) else GEMINI_PROVIDER
+            )
+            self._invalid_provider = None
+
+        if api_key is not None:
+            self.api_key = _clean(api_key)
+        elif self.provider == OPENAI_PROVIDER:
+            self.api_key = _clean(os.getenv("OPENAI_API_KEY"))
+        elif self.provider == GEMINI_PROVIDER:
+            self.api_key = _clean(os.getenv("GEMINI_API_KEY"))
+        else:
+            self.api_key = ""
+
+        if self.provider == OPENAI_PROVIDER:
+            default_model = _clean(os.getenv("OPENAI_MODEL")) or "gpt-5.2"
+        else:
+            default_model = _clean(os.getenv("GEMINI_MODEL")) or "gemini-3.8-flash"
+        self.model = _clean(model) or default_model
+
+    @property
+    def is_configured(self) -> bool:
+        """Whether this service has a supported provider and a non-empty key."""
+        return self.provider in SUPPORTED_PROVIDERS and bool(self.api_key)
+
+    @property
+    def provider_label(self) -> str:
+        if self.provider == GEMINI_PROVIDER:
+            return "Gemini"
+        if self.provider == OPENAI_PROVIDER:
+            return "OpenAI"
+        return "AI provider"
+
+    @property
+    def configuration_message(self) -> str:
+        """A non-sensitive readiness message for the Streamlit setup UI."""
+        if self._invalid_provider:
+            return "Choose either Gemini or OpenAI as the AI provider."
+        if self.is_configured:
+            return f"{self.provider_label} is ready with model {self.model}."
+        env_name = "OPENAI_API_KEY" if self.provider == OPENAI_PROVIDER else "GEMINI_API_KEY"
+        return (
+            f"Add a {self.provider_label} API key for this browser session or configure {env_name} "
+            "for the deployment."
+        )
+
+    def require_configuration(self) -> None:
+        """Raise a clear error instead of quietly replacing AI planning locally."""
+        if self._invalid_provider:
+            raise AIConfigurationError("Choose either Gemini or OpenAI as the AI provider.")
+        if self.provider not in SUPPORTED_PROVIDERS:
+            raise AIConfigurationError("Choose Gemini or OpenAI, then add its API key.")
+        if not self.api_key:
+            raise AIConfigurationError(self.configuration_message + " Crafting a day requires AI.")
+
+    def _gemini_text(self, prompt: str, *, response_format: dict[str, Any] | None = None) -> str:
+        try:
+            from google import genai
+        except ImportError as exc:  # pragma: no cover - depends on deployment extras
+            raise AIProviderError("Gemini support is not installed on this deployment.") from exc
+
+        client = genai.Client(api_key=self.api_key)
+        request: dict[str, Any] = {
+            "model": self.model,
+            "input": prompt,
+            # Task names and calendar commitments are private. A one-shot
+            # planning request needs no provider-side interaction history.
+            "store": False,
+        }
+        if response_format is not None:
+            request["response_format"] = response_format
+        interaction = client.interactions.create(**request)
+        return _clean(getattr(interaction, "output_text", ""))
+
+    def _openai_text(self, prompt: str, *, structured: bool = False) -> str:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - depends on deployment extras
+            raise AIProviderError("OpenAI support is not installed on this deployment.") from exc
+
+        client = OpenAI(api_key=self.api_key)
+        request: dict[str, Any] = {
+            "model": self.model,
+            "input": prompt,
+            # Responses are not retained by OpenAI for this one-shot request.
+            "store": False,
+        }
+        if structured:
+            request["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "daycraft_daily_plan",
+                    "strict": True,
+                    "schema": _DAY_PLAN_SCHEMA,
+                }
+            }
+        response = client.responses.create(**request)
+        return _clean(getattr(response, "output_text", ""))
+
+    def _request_plan_json(self, prompt: str) -> str:
+        self.require_configuration()
+        if self.provider == GEMINI_PROVIDER:
+            return self._gemini_text(
+                prompt,
+                response_format={
+                    "type": "text",
+                    "mime_type": "application/json",
+                    "schema": _DAY_PLAN_SCHEMA,
+                },
+            )
+        if self.provider == OPENAI_PROVIDER:
+            return self._openai_text(prompt, structured=True)
+        # ``require_configuration`` already rejects this state. Keep the guard
+        # so future provider additions stay safe.
+        raise AIConfigurationError("Choose Gemini or OpenAI before crafting a day.")
+
+    def _request_text(self, prompt: str) -> str:
+        self.require_configuration()
+        if self.provider == GEMINI_PROVIDER:
+            return self._gemini_text(prompt)
+        if self.provider == OPENAI_PROVIDER:
+            return self._openai_text(prompt)
+        raise AIConfigurationError("Choose Gemini or OpenAI before requesting coaching.")
+
+    def create_day_plan(
+        self,
+        selected_date: date,
+        tasks: Iterable[dict[str, Any]],
+        commitments: Iterable[dict[str, Any]],
+        *,
+        work_start: str,
+        work_end: str,
+        intention: str = "",
+    ) -> DayPlanAdvice:
+        """Ask the selected provider to prioritize actual work for one day.
+
+        Time placement remains local and validated. If the model is unavailable
+        or returns unusable JSON, this method raises rather than silently saving
+        a non-AI plan under an AI call-to-action.
+        """
+        self.require_configuration()
+        eligible_tasks = [
+            task
+            for task in tasks
+            if task.get("status") != "completed"
+            and (not task.get("due_date") or str(task["due_date"]) <= selected_date.isoformat())
+        ]
+        eligible_tasks.sort(key=task_sort_key)
+        fallback_order = [int(task["id"]) for task in eligible_tasks]
+        if not eligible_tasks:
+            return DayPlanAdvice(
+                ordered_task_ids=[],
+                focus_theme="Capture one meaningful task to begin.",
+                plan_note="Add a task, then DayCraft can turn it into a real time block.",
+                provider=self.model,
+                used_fallback=False,
+            )
+
+        task_context = [
+            {
+                "id": int(task["id"]),
+                "title": str(task["title"]),
+                "priority": str(task.get("priority") or "Medium"),
+                "category": str(task.get("category") or "General"),
+                "estimate_minutes": int(task.get("estimated_minutes") or 30),
+                "due_date": task.get("due_date"),
+            }
+            for task in eligible_tasks
+        ]
+        commitment_context = [
+            {
+                "title": str(event.get("title") or "Commitment"),
+                "start": str(event.get("start_time") or ""),
+                "end": str(event.get("end_time") or ""),
+            }
+            for event in commitments
+        ]
+        prompt = f"""
+You are DayCraft's pragmatic daily-planning assistant. Choose the best order
+for a user's real task list on {selected_date.isoformat()}. Their workday is
+{work_start}–{work_end}. Calendar commitments are fixed and cannot move.
+
+Return JSON only with this exact shape:
+{{
+  "ordered_task_ids": [integer task IDs, in recommended order],
+  "focus_theme": "a concise, encouraging focus theme",
+  "plan_note": "one concise explanation of the plan"
+}}
+
+Rules:
+- Use only IDs from the supplied tasks; never invent a task or ID.
+- Order work realistically by urgency, importance, estimates, and fixed commitments.
+- The local planner will choose exact free time slots, so do not create times or move meetings.
+- Never claim that a task is complete.
+
+User intention: {intention.strip() or "No additional preference provided."}
+Tasks: {json.dumps(task_context, ensure_ascii=False)}
+Fixed commitments: {json.dumps(commitment_context, ensure_ascii=False)}
+"""
+        try:
+            response_text = self._request_plan_json(prompt)
+            ordered_ids, focus_theme, plan_note = parse_day_plan_payload(
+                response_text, set(fallback_order), fallback_order
+            )
+        except AIConfigurationError:
+            raise
+        except Exception as exc:
+            raise AIPlanningError(
+                f"{self.provider_label} could not craft a usable daily plan. Check the key and try again."
+            ) from exc
+        return DayPlanAdvice(
+            ordered_task_ids=ordered_ids,
+            focus_theme=focus_theme,
+            plan_note=plan_note,
+            provider=self.model,
+            used_fallback=False,
+        )
+
+    def generate(self, prompt: str, fallback: str) -> AIResponse:
+        """Generate non-scheduling coaching, retaining a safe local fallback.
+
+        Only ``create_day_plan`` is the core, AI-required action. A focus
+        reflection or weekly note never changes a schedule, so it should stay
+        useful when the user has not yet connected a provider.
+        """
+        if not self.is_configured:
+            return AIResponse(
+                content=fallback,
+                provider="local planner",
+                used_fallback=True,
+                notice="Connect Gemini or OpenAI to enable AI coaching.",
+            )
+        try:
+            content = self._request_text(prompt)
+            if content:
+                return AIResponse(content=content, provider=self.model, used_fallback=False)
+        except AIConfigurationError:
+            raise
+        except Exception:
+            # Coaching never changes a saved schedule, so a concise local
+            # reflection is safe when a configured provider has a transient error.
+            pass
+        return AIResponse(
+            content=fallback,
+            provider=self.model,
+            used_fallback=True,
+            notice=f"{self.provider_label} is temporarily unavailable; this local guidance is still useful.",
+        )
+
+    def daily_coaching(
+        self, blocks: Iterable[ScheduleBlock], unscheduled_titles: Iterable[str]
+    ) -> AIResponse:
+        schedule = plan_as_markdown(list(blocks), [{"title": title} for title in unscheduled_titles])
+        prompt = f"""
+You are DayCraft, a pragmatic productivity coach. Review this already-valid daily
+schedule. Give a concise plan in Markdown with: (1) a one-sentence focus theme,
+(2) three practical execution suggestions, and (3) a kind warning only if the
+schedule looks overfull. Do not invent appointments or change time blocks.
+
+{schedule}
+"""
+        fallback = (
+            "### Your focus theme\nProtect the first high-priority block and use the short gaps as buffers.\n\n"
+            "### Execution cues\n- Start each block by naming one concrete outcome.\n"
+            "- Keep 10-minute transitions intact instead of filling every gap.\n"
+            "- Move anything still unplaced into tomorrow before ending the day."
+        )
+        return self.generate(prompt, fallback)
+
+    def weekly_coaching(self, tasks: Iterable[dict[str, object]], event_count: int) -> AIResponse:
+        task_lines = "\n".join(
+            f"- {task.get('title')} | {task.get('priority')} | due {task.get('due_date') or 'unscheduled'}"
+            for task in tasks
+        ) or "- No open tasks yet"
+        prompt = f"""
+You are a calm executive assistant. Turn this week's workload into a short,
+realistic weekly planning note. There are {event_count} calendar commitments.
+Suggest a theme for the week, the three most important outcomes, and a Friday
+review prompt. Do not make up dates, meetings, or claims of completed work.
+
+Open work:
+{task_lines}
+"""
+        fallback = (
+            "### This week\nChoose three outcomes, reserve the first focused block on each workday, "
+            "and leave room for the calendar commitments already on your plan.\n\n"
+            "### Friday review\nWhat moved forward, what needs a new date, and what can be removed?"
+        )
+        return self.generate(prompt, fallback)
+
+    def reflection(self, energy: int, focus: int, satisfaction: int, stress: int, notes: str) -> AIResponse:
+        prompt = f"""
+You are a supportive productivity coach. Based only on these self-reported
+ratings, offer two concrete adjustments for tomorrow in fewer than 120 words.
+Energy {energy}/10; focus {focus}/10; satisfaction {satisfaction}/10; stress {stress}/10.
+Notes: {notes or 'None'}
+"""
+        fallback = (
+            "Keep tomorrow small: begin with one high-value task, then protect a short recovery break. "
+            "Use today's ratings as information, not a verdict."
+        )
+        return self.generate(prompt, fallback)

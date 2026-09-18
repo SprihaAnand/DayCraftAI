@@ -1,62 +1,107 @@
-# app.py
+"""DayCraft's focused authenticated workspace router."""
+
+from __future__ import annotations
+
+from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
 
-# Components
+from components.auth import render_authentication
 from components.sidebar import render_sidebar
-from components.header import render_header
+from components.theme import apply_theme, configure_page
+from services.calendar import PROVIDER as CALENDAR_PROVIDER
+from services.calendar import CalendarError, CalendarService
+from services.database import Database
+from services.gmail import PROVIDER as GMAIL_PROVIDER
+from services.gmail import GmailError, GmailService
 
-# Utils
-from utils.session_state import init_session_state
+configure_page()
+load_dotenv(Path(__file__).with_name(".env"))
 
-# Pages
-from pages import (
-    schedule_generator,
-    task_prioritizer,
-    productivity_analyzer,
-    schedule_improver,
-    focus_session,
-    weekly_planner,
-    visualization_dashboard
-)
 
-# Setup environment and session state
-load_dotenv()
-init_session_state()
-render_header()
-page = render_sidebar()
+def _handle_google_callback(
+    database: Database, calendar: CalendarService, gmail: GmailService
+) -> None:
+    """Route one signed, short-lived Google OAuth callback to its integration."""
+    query = st.query_params
+    provider_error = query.get("error")
+    code = query.get("code")
+    state = query.get("state")
+    if provider_error:
+        st.session_state["google_callback_error"] = "Google access was not approved."
+        st.query_params.clear()
+        st.rerun()
+    if code and state:
+        active_user_id = st.session_state.get("authenticated_user_id")
+        if not active_user_id:
+            st.session_state["google_callback_error"] = (
+                "Sign in to the account that started this Google connection, then begin again."
+            )
+            st.query_params.clear()
+            st.rerun()
+        provider = database.oauth_state_provider(str(state), expected_user_id=int(active_user_id))
+        if provider not in {CALENDAR_PROVIDER, GMAIL_PROVIDER}:
+            st.session_state["google_callback_error"] = (
+                "This Google connection link expired or does not belong to the signed-in account. Start again."
+            )
+            st.query_params.clear()
+            st.rerun()
+        try:
+            if provider == CALENDAR_PROVIDER:
+                calendar.complete_authorization(
+                    str(state), str(code), expected_user_id=int(active_user_id)
+                )
+                st.session_state["google_callback_success"] = "calendar"
+            else:
+                gmail.complete_authorization(str(state), str(code), expected_user_id=int(active_user_id))
+                st.session_state["google_callback_success"] = "gmail"
+        except (CalendarError, GmailError) as error:
+            st.session_state["google_callback_error"] = str(error)
+        st.query_params.clear()
+        st.rerun()
 
-hide_streamlit_style = """
-<style>
-[data-testid="stSidebarNav"] {
-    display: none;
-}
-</style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# Routing logic
-if page == "📅 Schedule Generator":
-    schedule_generator.schedule_generator_page()
-elif page == "📋 Task Prioritizer":
-    task_prioritizer.task_prioritizer_page()
-elif page == "📊 Productivity Analyzer":
-    productivity_analyzer.productivity_analyzer_page()
-elif page == "🔧 Schedule Improver":
-    schedule_improver.schedule_improver_page()
-elif page == "🎯 Focus Session":
-    focus_session.focus_session_page()
-elif page == "📆 Weekly Planner":
-    weekly_planner.weekly_planner_page()
-elif page == "📈 Visualization Dashboard":
-    visualization_dashboard.visualization_dashboard_page()
+def main() -> None:
+    database = Database()
+    database.initialize()
+    calendar = CalendarService(database)
+    gmail = GmailService(database)
+    _handle_google_callback(database, calendar, gmail)
+    apply_theme()
 
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center'>
-    <p>Made with ❤️ using Streamlit, Google Gemini AI</p>
-    <p><small>Enhanced with Interactive Charts • Real-time Analytics • Smart Visualizations</small></p>
-</div>
-""", unsafe_allow_html=True)
+    callback_error = st.session_state.pop("google_callback_error", None)
+    callback_success = st.session_state.pop("google_callback_success", None)
+    if callback_error:
+        st.error(callback_error, icon=":material/error:")
+    if callback_success:
+        success_copy = (
+            "Google Calendar connected. Import events from Settings when you are ready."
+            if callback_success == "calendar"
+            else "Gmail connected. DayCraft can send an email only when you explicitly compose and send one."
+        )
+        st.success(success_copy, icon=":material/check_circle:")
+
+    user = render_authentication(database)
+    if user is None:
+        st.stop()
+
+    pages = [
+        st.Page(
+            "app_pages/day_plan.py",
+            title="Today",
+            icon=":material/today:",
+            default=True,
+        ),
+        st.Page("app_pages/task_backlog.py", title="Tasks", icon=":material/checklist:"),
+        st.Page("app_pages/focus_mode.py", title="Focus", icon=":material/timer:"),
+        st.Page("app_pages/progress_review.py", title="Review", icon=":material/insights:"),
+        st.Page("app_pages/account_settings.py", title="Settings", icon=":material/settings:"),
+    ]
+    selected_page = st.navigation(pages, position="top")
+    render_sidebar(user, calendar, gmail)
+    selected_page.run()
+
+
+if __name__ == "__main__":
+    main()

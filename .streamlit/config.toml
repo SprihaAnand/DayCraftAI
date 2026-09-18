@@ -1,0 +1,35 @@
+[theme]
+base = "light"
+primaryColor = "#173B84"
+backgroundColor = "#F4F2EA"
+secondaryBackgroundColor = "#FFFDF7"
+textColor = "#101217"
+borderColor = "#101217"
+linkColor = "#173B84"
+font = "'DM Sans':https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap"
+headingFont = "'Space Grotesk':https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 15
+headingFontSizes = ["2.55rem", "1.85rem", "1.35rem", "1.1rem", "1rem", "0.9rem"]
+headingFontWeights = [700, 700, 700, 650, 650, 650]
+baseRadius = "4px"
+buttonRadius = "4px"
+showWidgetBorder = true
+showSidebarBorder = true
+chartCategoricalColors = ["#2769DC", "#EFFF3E", "#FF7A5C", "#173B84", "#7D57E8", "#1F8A70"]
+blueColor = "#2769DC"
+greenColor = "#1F8A70"
+yellowColor = "#C99700"
+orangeColor = "#D95D42"
+violetColor = "#7D57E8"
+grayColor = "#5C6470"
+
+[theme.sidebar]
+backgroundColor = "#173B84"
+secondaryBackgroundColor = "#1E4DA7"
+textColor = "#FFFDF7"
+borderColor = "#101217"
+primaryColor = "#EFFF3E"
+
+[client]
+toolbarMode = "minimal"

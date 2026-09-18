@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and editor files
+.venv/
+venv/
+.env
+**/.streamlit/secrets.toml
+.vscode/
+.idea/
+
+# DayCraft local data and OAuth credentials
+ai-productivity-assistant/.env
+ai-productivity-assistant/data/*.db
+ai-productivity-assistant/data/*.db-*
+ai-productivity-assistant/data/*.sqlite*
+ai-productivity-assistant/data/*.json
+!ai-productivity-assistant/data/.gitkeep
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

@@ -1,182 +1,61 @@
-import os
-from dotenv import load_dotenv
-import google.generativeai as genai
-from datetime import datetime
+"""Backward-compatible helpers for older imports.
 
-# Load environment variables from .env
-load_dotenv()
+The app itself uses :mod:`services.ai`. These helpers deliberately never raise
+at import time when a Gemini key is absent.
+"""
 
-# Read Gemini API key from environment variable
-api_key = os.getenv("GEMINI_API_KEY")
+from __future__ import annotations
 
-if not api_key:
-    raise ValueError("❌ GEMINI_API_KEY not found in your environment variables or .env file.")
+from services.ai import AIConfigurationError, AIService
 
-# Configure the Gemini API with the key
-genai.configure(api_key=api_key)
 
-# Initialize the model
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-def generate_schedule(prompt):
-    """
-    Generate a productivity schedule using Gemini AI
-    """
+def _respond(prompt: str, fallback: str) -> str:
     try:
-        system_prompt = f"""
-        You are a productivity assistant that creates detailed, actionable schedules.
-        
-        Current date and time: {datetime.now().strftime("%Y-%m-%d %H:%M")}
-        
-        Create a detailed daily schedule based on the user's requirements. Include:
-        - Specific time blocks
-        - Task priorities
-        - Break times
-        - Realistic time estimates
-        - Actionable steps
-        
-        Format the response as a clear, structured schedule that's easy to follow.
-        Use emojis and clear formatting to make it visually appealing.
-        
-        User Request: {prompt}
-        """
-        
-        response = model.generate_content(system_prompt)
-        return response.text
-        
-    except Exception as e:
-        return f"Error generating schedule: {str(e)}"
+        return AIService().generate(prompt, fallback).content
+    except AIConfigurationError:
+        # These legacy helpers are not DayCraft's daily-plan action. Preserve
+        # their import-safe compatibility while the product itself requires AI
+        # before it can craft a time-blocked daily plan.
+        return fallback
 
-def analyze_productivity(tasks_completed, time_spent):
-    """
-    Analyze productivity metrics and provide insights
-    """
-    try:
-        prompt = f"""
-        You are a productivity analyst. Analyze the following productivity data and provide insights:
-        
-        Tasks Completed: {tasks_completed}
-        Time Spent: {time_spent}
-        
-        Provide:
-        1. Productivity assessment
-        2. Areas for improvement
-        3. Specific recommendations
-        4. Next steps
-        
-        Be constructive and actionable in your feedback. Use a friendly, encouraging tone.
-        """
-        
-        response = model.generate_content(prompt)
-        return response.text
-        
-    except Exception as e:
-        return f"Error analyzing productivity: {str(e)}"
 
-def suggest_improvements(current_schedule, feedback):
-    """
-    Suggest improvements to the current schedule based on feedback
-    """
-    try:
-        prompt = f"""
-        You are a productivity consultant. Review the current schedule and user feedback to suggest improvements.
-        
-        Current Schedule:
-        {current_schedule}
-        
-        User Feedback:
-        {feedback}
-        
-        Based on the feedback, suggest specific improvements to the schedule:
-        1. Identify problem areas
-        2. Propose solutions
-        3. Provide an updated schedule
-        4. Explain the reasoning behind changes
-        
-        Make the suggestions practical and implementable. Use clear formatting and emojis.
-        """
-        
-        response = model.generate_content(prompt)
-        return response.text
-        
-    except Exception as e:
-        return f"Error suggesting improvements: {str(e)}"
+def generate_schedule(prompt: str) -> str:
+    return _respond(
+        f"Create a realistic, time-blocked daily productivity schedule for:\n{prompt}",
+        "Create a task in DayCraft and use Today to place it into a real available time slot.",
+    )
 
-def prioritize_tasks(task_list):
-    """
-    Prioritize a list of tasks using AI analysis
-    """
-    try:
-        prompt = f"""
-        You are a task management expert. Prioritize the following tasks based on importance, urgency, and impact:
-        
-        Tasks:
-        {task_list}
-        
-        Provide:
-        1. Prioritized task list (High, Medium, Low priority levels)
-        2. Reasoning for each priority assignment
-        3. Suggested time allocation
-        4. Dependencies or prerequisites
-        
-        Use a clear, actionable format with emojis and good structure.
-        """
-        
-        response = model.generate_content(prompt)
-        return response.text
-        
-    except Exception as e:
-        return f"Error prioritizing tasks: {str(e)}"
 
-def generate_focus_session(duration, task_type):
-    """
-    Generate a focused work session plan
-    """
-    try:
-        prompt = f"""
-        Create a focused work session plan for {duration} minutes focused on {task_type}.
-        
-        Include:
-        - Warm-up activities (5 minutes)
-        - Main work blocks with specific techniques
-        - Break intervals (use Pomodoro technique if applicable)
-        - Wrap-up activities
-        
-        Make it practical and motivating. Include productivity tips specific to the task type.
-        """
-        
-        response = model.generate_content(prompt)
-        return response.text
-        
-    except Exception as e:
-        return f"Error generating focus session: {str(e)}"
+def analyze_productivity(tasks_completed: str, time_spent: str) -> str:
+    return _respond(
+        f"Offer a concise productivity reflection. Completed: {tasks_completed}\nTime: {time_spent}",
+        "Record a daily check-in in Progress to track patterns over time.",
+    )
 
-def create_weekly_plan(goals, constraints):
-    """
-    Create a weekly productivity plan
-    """
-    try:
-        prompt = f"""
-        Create a comprehensive weekly productivity plan based on the following:
-        
-        Goals for the week:
-        {goals}
-        
-        Constraints/Limitations:
-        {constraints}
-        
-        Provide:
-        1. Daily themes or focus areas
-        2. Goal breakdown across the week
-        3. Buffer time for unexpected tasks
-        4. Weekly review and planning time
-        5. Work-life balance considerations
-        
-        Make it realistic and achievable.
-        """
-        
-        response = model.generate_content(prompt)
-        return response.text
-        
-    except Exception as e:
-        return f"Error creating weekly plan: {str(e)}"
+
+def suggest_improvements(current_schedule: str, feedback: str) -> str:
+    return _respond(
+        f"Suggest practical schedule improvements. Schedule: {current_schedule}\nFeedback: {feedback}",
+        "Review your plan’s task estimates, then leave a buffer between fixed commitments.",
+    )
+
+
+def prioritize_tasks(task_list: str) -> str:
+    return _respond(
+        f"Prioritize these tasks and explain the tradeoffs briefly:\n{task_list}",
+        "Use High for urgent, high-impact work; Medium for important work; Low for optional work.",
+    )
+
+
+def generate_focus_session(duration: int, task_type: str) -> str:
+    return _respond(
+        f"Create a {duration}-minute focus session for: {task_type}",
+        f"Set a {duration}-minute timer, remove distractions, and finish with a two-minute review.",
+    )
+
+
+def create_weekly_plan(goals: str, constraints: str) -> str:
+    return _respond(
+        f"Create a realistic weekly productivity plan. Goals: {goals}\nConstraints: {constraints}",
+        "Choose three outcomes, place them in open calendar gaps, and review them on Friday.",
+    )

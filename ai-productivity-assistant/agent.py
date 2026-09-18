@@ -59,3 +59,11 @@ def create_weekly_plan(goals: str, constraints: str) -> str:
         f"Create a realistic weekly productivity plan. Goals: {goals}\nConstraints: {constraints}",
         "Choose three outcomes, place them in open calendar gaps, and review them on Friday.",
     )
+
+
+if __name__ == "__main__":
+    # Existing deployments used ``agent.py`` as their Streamlit entry point.
+    # Keep those URLs working while the canonical entry point remains app.py.
+    from app import main
+
+    main()

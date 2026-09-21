@@ -12,7 +12,7 @@ def configure_page() -> None:
         page_title="DayCraft — Your day, intentionally",
         page_icon="◈",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
         menu_items={"About": "DayCraft is a private, AI-assisted productivity workspace."},
     )
 
@@ -40,12 +40,21 @@ def apply_theme() -> None:
             --dc-soft-blue: #E7F0FF;
             --dc-soft-lime: #F7FFC2;
         }
+        *, *::before, *::after { box-sizing: border-box; }
         .stApp { background: var(--dc-canvas); color: var(--dc-ink); }
         [data-testid="stHeader"] {
             background: rgba(244, 242, 234, .93);
             border-bottom: 2px solid var(--dc-line);
         }
-        .block-container { max-width: 1480px; padding-top: 1.8rem; padding-bottom: 3.8rem; }
+        [data-testid="stAppViewContainer"] .main .block-container {
+            width: 100%;
+            max-width: 1480px;
+            padding: clamp(1.1rem, 2.4vw, 2rem) clamp(1rem, 3.2vw, 3.4rem) clamp(3rem, 6vw, 5rem);
+        }
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"] > div { min-width: 0; }
+        [data-testid="stElementContainer"], [data-testid="stWidgetLabel"] { min-width: 0; }
+        [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] span { overflow-wrap: anywhere; }
         h1, h2, h3, h4 { color: var(--dc-ink); letter-spacing: -.045em; }
         h1 { font-weight: 750; }
         p, label, [data-testid="stCaptionContainer"] { color: var(--dc-muted); }
@@ -65,6 +74,8 @@ def apply_theme() -> None:
             border: 2px solid var(--dc-line);
             box-shadow: 4px 4px 0 var(--dc-line);
             padding: .25rem .4rem;
+            max-width: 100%;
+            overflow-x: auto;
         }
         [data-testid="stNavigation"] a, [data-testid="stSidebarNav"] a { border-radius: 3px; }
         [data-testid="stNavigation"] a[aria-current="page"] {
@@ -80,7 +91,8 @@ def apply_theme() -> None:
         }
         [data-testid="stMetricLabel"] { color: var(--dc-muted); font-size: .76rem; font-weight: 700; letter-spacing: .075em; text-transform: uppercase; }
         [data-testid="stMetricValue"] { color: var(--dc-ink); font-weight: 750; }
-        [data-testid="stButton"] > button, [data-testid="stDownloadButton"] > button {
+        [data-testid="stButton"] > button, [data-testid="stFormSubmitButton"] > button,
+        [data-testid="stDownloadButton"] > button, [data-testid="stLinkButton"] > a {
             min-height: 2.55rem;
             border: 2px solid var(--dc-line);
             border-radius: 4px;
@@ -89,24 +101,33 @@ def apply_theme() -> None:
             box-shadow: 3px 3px 0 rgba(16, 18, 23, .92);
             transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
         }
-        [data-testid="stButton"] > button:hover, [data-testid="stDownloadButton"] > button:hover {
+        [data-testid="stButton"] > button:hover, [data-testid="stFormSubmitButton"] > button:hover,
+        [data-testid="stDownloadButton"] > button:hover, [data-testid="stLinkButton"] > a:hover {
             transform: translate(-1px, -1px);
             box-shadow: 5px 5px 0 rgba(16, 18, 23, .92);
         }
-        [data-testid="stButton"] > button:active, [data-testid="stDownloadButton"] > button:active {
+        [data-testid="stButton"] > button:active, [data-testid="stFormSubmitButton"] > button:active,
+        [data-testid="stDownloadButton"] > button:active, [data-testid="stLinkButton"] > a:active {
             transform: translate(2px, 2px);
             box-shadow: 1px 1px 0 rgba(16, 18, 23, .92);
         }
-        [data-testid="stButton"] > button[kind="primary"] {
-            color: var(--dc-paper);
-            background: var(--dc-navy);
-            border-color: var(--dc-line);
+        button[kind="primary"], a[kind="primary"],
+        [data-testid="stButton"] > button[kind="primary"],
+        [data-testid="stFormSubmitButton"] > button[kind="primary"] {
+            color: var(--dc-paper) !important;
+            background: var(--dc-navy) !important;
+            border-color: var(--dc-line) !important;
         }
-        [data-testid="stButton"] > button[kind="primary"]:hover { background: var(--dc-blue); }
+        button[kind="primary"] *, a[kind="primary"] * { color: inherit !important; }
+        button[kind="primary"] svg, a[kind="primary"] svg { fill: currentColor !important; }
+        [data-testid="stButton"] > button[kind="primary"]:hover,
+        [data-testid="stFormSubmitButton"] > button[kind="primary"]:hover { background: var(--dc-blue) !important; }
         .st-key-template_apply button, .st-key-planner_build button, .st-key-today_craft_plan button {
             color: var(--dc-ink) !important;
             background: var(--dc-acid) !important;
         }
+        .st-key-template_apply button *, .st-key-planner_build button *, .st-key-today_craft_plan button * { color: inherit !important; }
+        .st-key-template_apply button svg, .st-key-planner_build button svg, .st-key-today_craft_plan button svg { fill: currentColor !important; }
         .st-key-template_apply button:hover, .st-key-planner_build button:hover, .st-key-today_craft_plan button:hover {
             background: #F7FF91 !important;
         }
@@ -237,7 +258,10 @@ def apply_theme() -> None:
         .dc-unscheduled-chip { padding: .28rem .48rem; background: #FFD0C6; border: 1px solid var(--dc-line); color: var(--dc-ink); font-size: .76rem; font-weight: 700; }
 
         @media (max-width: 760px) {
-            .block-container { padding-top: 1.1rem; }
+            [data-testid="stAppViewContainer"] .main .block-container { padding: 1rem .9rem 3.25rem; }
+            [data-testid="stNavigation"] { margin-bottom: .15rem; box-shadow: 3px 3px 0 var(--dc-line); }
+            [data-testid="stMetric"] { padding: .8rem .85rem; box-shadow: 3px 3px 0 rgba(16, 18, 23, .92); }
+            .dc-hero, .dc-card { padding: 1rem; box-shadow: 3px 3px 0 var(--dc-line); }
             .dc-today-hero, .dc-planner-hero { display: block; }
             .dc-today-status, .dc-blueprint-chip { margin-top: 1rem; }
             .dc-canvas-heading { display: block; }
@@ -248,6 +272,24 @@ def apply_theme() -> None:
             .dc-rhythm-segment { padding: .28rem .25rem; }
             .dc-rhythm-segment strong { font-size: .6rem; }
             .dc-rhythm-segment span { display: none; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def apply_public_shell() -> None:
+    """Keep the sign-in surface focused before a workspace account is available."""
+
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+        [data-testid="stAppViewContainer"] .main .block-container { max-width: 760px; }
+        [data-testid="stTabs"] { margin-top: .4rem; }
+        @media (max-width: 760px) {
+            [data-testid="stAppViewContainer"] .main .block-container { max-width: 100%; }
         }
         </style>
         """,

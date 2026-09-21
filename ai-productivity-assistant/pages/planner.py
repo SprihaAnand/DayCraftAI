@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import date, datetime, time
 from html import escape
 from typing import Any
@@ -17,8 +19,9 @@ from services.planning import (
     ScheduleBlock,
     ScheduleTemplate,
     build_template_schedule,
+    get_day_pace,
     get_schedule_template,
-    list_schedule_templates,
+    list_day_paces,
     minutes_from_time,
     template_default_work_hours,
     time_from_minutes,
@@ -27,7 +30,7 @@ from services.planning import (
 EVENT_CATEGORIES = ["Deep work", "Meeting", "Personal", "Admin", "Health", "Break", "General"]
 WORKDAY_START_KEY = "planner_workday_start"
 WORKDAY_END_KEY = "planner_workday_end"
-TEMPLATE_KEY = "planner_template_id"
+PACE_KEY = "planner_day_pace"
 
 
 def _time_value(value: time) -> str:
@@ -73,12 +76,17 @@ def _open_focus() -> None:
     st.switch_page("app_pages/focus_mode.py")
 
 
-def _set_template_default_hours() -> None:
-    """Use a template's suggested day bounds when the person deliberately changes rhythm."""
-    template_id = str(st.session_state.get(TEMPLATE_KEY) or "balanced")
-    start_value, end_value = template_default_work_hours(template_id)
+def _set_pace_default_hours() -> None:
+    """Make the day pace a useful starting point without locking working hours."""
+    pace = get_day_pace(str(st.session_state.get(PACE_KEY) or "Balanced"))
+    start_value, end_value = template_default_work_hours(pace.template_id)
     st.session_state[WORKDAY_START_KEY] = time.fromisoformat(start_value)
     st.session_state[WORKDAY_END_KEY] = time.fromisoformat(end_value)
+
+
+def _block_guidance_key(start_time: str, end_time: str, title: str) -> str:
+    """Identify a locally validated block without trusting model-provided time."""
+    return f"{start_time}|{end_time}|{title}"
 
 
 def _event_start_end(event: dict[str, Any], start_of_day: int, end_of_day: int) -> tuple[int, int] | None:
@@ -311,6 +319,7 @@ def _store_template_rhythm(
     work_start: time,
     work_end: time,
     template_id: str,
+    pace: str,
 ) -> list[ScheduleBlock]:
     all_events = database.list_events(user.id, start_date=selected_date, end_date=selected_date)
     fixed_events = [event for event in all_events if event["source"] != "planner"]
@@ -321,6 +330,7 @@ def _store_template_rhythm(
         template_id=template_id,
         work_start=_time_value(work_start),
         work_end=_time_value(work_end),
+        pace=pace,
     )
     _replace_planner_blocks(
         database,
@@ -341,6 +351,7 @@ def _build_and_store_plan(
     work_end: time,
     intention: str,
     template_id: str,
+    pace: str,
 ) -> tuple[list[ScheduleBlock], list[dict[str, Any]], DayPlanAdvice]:
     all_events = database.list_events(user.id, start_date=selected_date, end_date=selected_date)
     fixed_events = [event for event in all_events if event["source"] != "planner"]
@@ -355,6 +366,7 @@ def _build_and_store_plan(
         work_start=_time_value(work_start),
         work_end=_time_value(work_end),
         intention=full_intention,
+        pace=pace,
     )
     blocks, unscheduled = build_template_schedule(
         selected_date,
@@ -364,7 +376,14 @@ def _build_and_store_plan(
         work_start=_time_value(work_start),
         work_end=_time_value(work_end),
         task_order=advice.ordered_task_ids,
+        pace=pace,
     )
+    block_guidance = {
+        _block_guidance_key(block.start_time, block.end_time, block.title): advice.task_guidance[block.task_id]
+        for block in blocks
+        if block.task_id is not None and block.task_id in advice.task_guidance
+    }
+    advice = replace(advice, block_guidance=block_guidance)
     _replace_planner_blocks(
         database,
         user,
@@ -382,19 +401,85 @@ def _build_and_store_plan(
             "fallback": advice.used_fallback,
             "task_order": advice.ordered_task_ids,
             "template": template.id,
+            "pace": advice.pace,
+            "focus_theme": advice.focus_theme,
+            "plan_note": advice.plan_note,
+            "block_guidance": advice.block_guidance,
         },
     )
     return blocks, unscheduled, advice
 
 
-def _render_plan_note(advice: DayPlanAdvice) -> None:
-    with st.container(border=True, key="planner_ai_note"):
-        st.markdown(":blue-badge[AI planning note]")
+def _render_written_agenda(
+    advice: DayPlanAdvice, events: list[dict[str, Any]], unscheduled_titles: list[str]
+) -> None:
+    """Put the AI-written, locally grounded agenda before the visual calendar.
+
+    The model's words are limited to the already-validated theme, note, and
+    task cues.  Every time and commitment shown below comes from the local
+    database, so a provider can never add or move calendar reality.
+    """
+    with st.container(border=True, key="planner_written_agenda"):
+        st.markdown(":blue-badge[AI-written day plan]")
         st.subheader(advice.focus_theme, icon=":material/auto_awesome:", anchor=False)
         st.write(advice.plan_note)
-        st.caption(f"{advice.provider} selected task order; DayCraft validated every block locally.")
+        st.caption(
+            f"{advice.provider} shaped a {advice.pace.lower()} day; DayCraft validated every time and protected commitment."
+        )
+        for event in events:
+            try:
+                start = _format_clock(minutes_from_time(str(event["start_time"])))
+                end = _format_clock(minutes_from_time(str(event["end_time"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            is_commitment = str(event.get("source")) != "planner"
+            event_kind = "Protected commitment" if is_commitment else str(event.get("category") or "Task block")
+            with st.container(border=True):
+                st.markdown(f"**{start}–{end} · {escape(str(event.get('title') or 'Untitled block'))}**")
+                st.caption(event_kind)
+                cue = advice.block_guidance.get(
+                    _block_guidance_key(
+                        str(event.get("start_time") or ""),
+                        str(event.get("end_time") or ""),
+                        str(event.get("title") or ""),
+                    )
+                )
+                if cue:
+                    st.write(cue)
+        if unscheduled_titles:
+            st.warning(
+                "Still to place: " + ", ".join(unscheduled_titles) + ". Keep these for another day or shorten the estimates.",
+                icon=":material/schedule:",
+            )
         if advice.notice:
             st.caption(advice.notice)
+
+
+def _restore_saved_advice(database: Database, user: AuthenticatedUser, selected_date: date) -> DayPlanAdvice | None:
+    """Recover the latest written agenda for this date after a browser refresh."""
+    for saved_plan in database.list_plans(user.id, "daily", limit=12):
+        try:
+            metadata = json.loads(str(saved_plan.get("metadata_json") or "{}"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(metadata, dict) or metadata.get("date") != selected_date.isoformat():
+            continue
+        guidance = metadata.get("block_guidance")
+        safe_guidance = (
+            {str(key): str(value)[:240] for key, value in guidance.items() if isinstance(key, str) and isinstance(value, str)}
+            if isinstance(guidance, dict)
+            else {}
+        )
+        return DayPlanAdvice(
+            ordered_task_ids=[int(item) for item in metadata.get("task_order", []) if str(item).isdigit()],
+            focus_theme=str(metadata.get("focus_theme") or "Your day is ready."),
+            plan_note=str(metadata.get("plan_note") or saved_plan.get("content") or ""),
+            provider=str(metadata.get("provider") or "AI planner"),
+            used_fallback=bool(metadata.get("fallback")),
+            block_guidance=safe_guidance,
+            pace=str(metadata.get("pace") or "Balanced"),
+        )
+    return None
 
 
 def _render_schedule_list(
@@ -563,68 +648,35 @@ def _rhythm_preview_events(
     return preview
 
 
-def _rhythm_map_markup(template: ScheduleTemplate) -> str:
-    """Render a compact, non-interactive overview of the selected day shape."""
-    start = minutes_from_time(template.default_work_start)
-    end = minutes_from_time(template.default_work_end)
-    span = max(1, end - start)
-    segments: list[str] = []
-    for division in template.divisions:
-        duration = max(1, minutes_from_time(division.end_time) - minutes_from_time(division.start_time))
-        tone = "break" if division.category == "Break" else ("anchor" if division.kind == "anchor" else "work")
-        percentage = duration / span * 100
-        segments.append(
-            f'<div class="dc-rhythm-segment" data-tone="{tone}" style="flex:{duration} 1 0" '
-            f'title="{escape(division.title)} · {escape(division.start_time)}–{escape(division.end_time)}">'
-            f"<strong>{escape(division.title)}</strong>"
-            f"<span>{percentage:.0f}% · {escape(division.start_time)}</span>"
-            "</div>"
-        )
-    return f'<div class="dc-rhythm-map" aria-label="{escape(template.name)} time divisions">{"".join(segments)}</div>'
-
-
-def _render_rhythm_picker(templates: tuple[ScheduleTemplate, ...]) -> ScheduleTemplate:
-    """Offer a small set of ready-made days instead of a configuration maze."""
-    by_id = {template.id: template for template in templates}
-    selected_id = str(st.session_state.get(TEMPLATE_KEY) or "balanced")
-    if selected_id not in by_id:
-        selected_id = "balanced"
-        st.session_state[TEMPLATE_KEY] = selected_id
-
-    with st.container(border=True, key="planner_rhythm"):
-        st.markdown('<p class="dc-rhythm-title">Start from a rhythm</p>', unsafe_allow_html=True)
-        st.markdown(
-            '<p class="dc-rhythm-copy">Choose the kind of day you actually have. It creates clear work windows, breaks, and a calm closeout.</p>',
-            unsafe_allow_html=True,
-        )
-        selected_id = st.segmented_control(
-            "Day rhythm",
-            list(by_id),
-            format_func=lambda template_id: by_id[str(template_id)].name,
-            key=TEMPLATE_KEY,
-            on_change=_set_template_default_hours,
+def _render_day_pace_picker() -> tuple[str, ScheduleTemplate]:
+    """Offer one simple decision before planning: how full should today feel?"""
+    paces = list_day_paces()
+    valid_names = {pace.name for pace in paces}
+    selected_name = str(st.session_state.get(PACE_KEY) or "Balanced")
+    if selected_name not in valid_names:
+        selected_name = "Balanced"
+        st.session_state[PACE_KEY] = selected_name
+    with st.container(border=True, key="planner_day_pace_card"):
+        st.subheader("How full should today feel?", icon=":material/tune:", anchor=False)
+        selected_name = st.segmented_control(
+            "Day pace",
+            [pace.name for pace in paces],
+            key=PACE_KEY,
+            on_change=_set_pace_default_hours,
             width="stretch",
         )
-        selected = by_id.get(str(selected_id or "balanced"), by_id["balanced"])
-        st.markdown(
-            f'<div class="dc-template-note"><strong>{escape(selected.name)}.</strong> '
-            f"{escape(selected.description)}</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(_rhythm_map_markup(selected), unsafe_allow_html=True)
-    return selected
+        pace = get_day_pace(str(selected_name or "Balanced"))
+        st.caption(pace.description)
+    return pace.name, get_schedule_template(pace.template_id)
 
 
 def render_planner(
     database: Database, user: AuthenticatedUser, calendar: CalendarService, ai: AIService
 ) -> None:
-    """Render one natural flow: choose a rhythm, protect reality, then build task blocks."""
-    templates = list_schedule_templates()
-    template_ids = {template.id for template in templates}
-    st.session_state.setdefault(TEMPLATE_KEY, "balanced")
-    if st.session_state[TEMPLATE_KEY] not in template_ids:
-        st.session_state[TEMPLATE_KEY] = "balanced"
-    initial_start, initial_end = template_default_work_hours(str(st.session_state[TEMPLATE_KEY]))
+    """Render one natural flow: choose pace, protect reality, then build a written agenda."""
+    st.session_state.setdefault(PACE_KEY, "Balanced")
+    pace = get_day_pace(str(st.session_state[PACE_KEY]))
+    initial_start, initial_end = template_default_work_hours(pace.template_id)
     st.session_state.setdefault(WORKDAY_START_KEY, time.fromisoformat(initial_start))
     st.session_state.setdefault(WORKDAY_END_KEY, time.fromisoformat(initial_end))
 
@@ -632,14 +684,14 @@ def render_planner(
         """
         <div class="dc-flow-heading">
           <span class="dc-kicker">SCHEDULE STUDIO</span>
-          <h2>Give the day a rhythm before you fill it.</h2>
-          <p>Pick a reusable frame, protect what cannot move, then let AI order your real work inside verified free time.</p>
+          <h2>Start with the kind of day you actually have.</h2>
+          <p>Choose a pace, protect what cannot move, then let AI turn your real work into a written plan inside verified free time.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    selected_template = _render_rhythm_picker(templates)
+    selected_pace, selected_template = _render_day_pace_picker()
     toolbar = st.columns([0.31, 0.31, 0.38], vertical_alignment="bottom")
     with toolbar[0]:
         selected_date = st.date_input("Plan date", value=date.today(), key="plan_date")
@@ -677,7 +729,7 @@ def render_planner(
             st.badge("AI key required", color="orange", icon=":material/key:")
         st.caption(
             f"{len(open_tasks)} open task(s) · {_format_minutes(total_estimate)} estimated. "
-            "AI chooses order; the local planner protects time."
+            "AI writes the agenda; the local planner protects time."
         )
         intention = st.text_input(
             "What needs real thinking today?",
@@ -685,7 +737,7 @@ def render_planner(
             key="planning_intention",
         )
         build = st.button(
-            "Build my time blocks",
+            "Create my written plan",
             type="primary",
             icon=":material/auto_awesome:",
             key="planner_build",
@@ -694,10 +746,10 @@ def render_planner(
         )
 
     if not ai.is_configured:
-        with st.expander("Connect an AI planner to build task blocks", icon=":material/key:", expanded=True):
+        with st.expander("Connect an AI planner to write your day plan", icon=":material/key:", expanded=True):
             ai = render_ai_setup(
                 key_prefix="planner",
-                heading="AI is required to build task blocks",
+                heading="AI is required to write your day plan",
                 compact=False,
             )
 
@@ -714,6 +766,7 @@ def render_planner(
                         work_start,
                         work_end,
                         selected_template.id,
+                        selected_pace,
                     )
                 except ValueError as error:
                     st.error(str(error))
@@ -744,6 +797,7 @@ def render_planner(
                         work_end,
                         intention,
                         selected_template.id,
+                        selected_pace,
                     )
                 except (AIConfigurationError, AIPlanningError, ValueError) as error:
                     st.error(str(error))
@@ -753,13 +807,13 @@ def render_planner(
                         str(task.get("title") or "Untitled task") for task in unscheduled
                     ]
                     if blocks:
-                        st.toast("Your AI time blocks are ready", icon=":material/check_circle:")
+                        st.toast("Your AI-written day plan is ready", icon=":material/check_circle:")
                     st.rerun()
 
     events = database.list_events(user.id, start_date=selected_date, end_date=selected_date)
-    advice = st.session_state.get(_plan_advice_key(selected_date))
-    if advice:
-        _render_plan_note(advice)
+    advice = st.session_state.get(_plan_advice_key(selected_date)) or _restore_saved_advice(
+        database, user, selected_date
+    )
 
     has_saved_task_blocks = any(
         event.get("source") == "planner"
@@ -774,9 +828,11 @@ def render_planner(
         )
     )
     unscheduled_titles = list(st.session_state.get(_unscheduled_key(selected_date), []))
+    if advice:
+        _render_written_agenda(advice, events, unscheduled_titles)
 
     st.markdown(
-        "<div class=\"dc-canvas-heading\"><div><span class=\"dc-kicker\">YOUR TIME, VISIBLE</span><h2>Your day on the clock</h2></div><p>Breaks, commitments, and task blocks each get an honest place in time.</p></div>",
+        "<div class=\"dc-canvas-heading\"><div><span class=\"dc-kicker\">SECONDARY TIME VIEW</span><h2>Your day on the clock</h2></div><p>The calendar view mirrors the written agenda above; it does not replace it.</p></div>",
         unsafe_allow_html=True,
     )
     canvas, summary = st.columns([0.72, 0.28], gap="medium")

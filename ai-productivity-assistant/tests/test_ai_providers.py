@@ -9,7 +9,13 @@ import unittest
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-from services.ai import AIConfigurationError, AIPlanningError, AIService, parse_day_plan_payload
+from services.ai import (
+    AIConfigurationError,
+    AIPlanningError,
+    AIService,
+    parse_day_plan_guidance,
+    parse_day_plan_payload,
+)
 
 
 def _tasks() -> list[dict[str, object]]:
@@ -127,6 +133,42 @@ class AIProviderTests(unittest.TestCase):
             [8, 7],
         )
         self.assertEqual(order, [7, 8])
+
+    def test_task_guidance_is_limited_to_real_tasks_and_cannot_be_a_second_schedule(self) -> None:
+        guidance = parse_day_plan_guidance(
+            """{
+                "task_guidance": [
+                    {"task_id": 7, "focus": "Draft the opening before polishing details."},
+                    {"task_id": 99, "focus": "Invented task"},
+                    {"task_id": 8, "focus": "Move the meeting to 2 PM."},
+                    {"task_id": 7, "focus": "Duplicate cue"}
+                ]
+            }""",
+            {7, 8},
+        )
+        self.assertEqual(guidance, {7: "Draft the opening before polishing details."})
+
+    def test_day_pace_is_sent_to_the_ai_but_timing_stays_out_of_its_response(self) -> None:
+        with patch("google.genai.Client") as client_class:
+            client_class.return_value.interactions.create.return_value.output_text = (
+                '{"ordered_task_ids": [7], "focus_theme": "Make a calm start", '
+                '"plan_note": "Leave breathing room around the important work.", '
+                '"task_guidance": [{"task_id": 7, "focus": "Start with a clear outline."}]}'
+            )
+            advice = AIService(api_key="session-gemini", provider="gemini").create_day_plan(
+                date(2026, 9, 18),
+                _tasks(),
+                [{"title": "Standup", "start_time": "09:00", "end_time": "09:30"}],
+                work_start="09:00",
+                work_end="17:00",
+                pace="Chill",
+            )
+
+        self.assertEqual(advice.pace, "Chill")
+        self.assertEqual(advice.task_guidance, {7: "Start with a clear outline."})
+        prompt = client_class.return_value.interactions.create.call_args.kwargs["input"]
+        self.assertIn("requested day pace is Chill", prompt)
+        self.assertIn("Calendar commitments are fixed and cannot move", prompt)
 
 
 if __name__ == "__main__":

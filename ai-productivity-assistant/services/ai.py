@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from services.planning import ScheduleBlock, plan_as_markdown, task_sort_key
+from services.planning import ScheduleBlock, get_day_pace, plan_as_markdown, task_sort_key
 
 GEMINI_PROVIDER = "gemini"
 OPENAI_PROVIDER = "openai"
@@ -28,10 +29,28 @@ _DAY_PLAN_SCHEMA = {
         "ordered_task_ids": {"type": "array", "items": {"type": "integer"}},
         "focus_theme": {"type": "string"},
         "plan_note": {"type": "string"},
+        "task_guidance": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "focus": {"type": "string"},
+                },
+                "required": ["task_id", "focus"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["ordered_task_ids", "focus_theme", "plan_note"],
+    "required": ["ordered_task_ids", "focus_theme", "plan_note", "task_guidance"],
     "additionalProperties": False,
 }
+
+_TIME_CLAIM = re.compile(
+    r"(?:\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\bat\s+(?:[1-9]|1[0-2])\b(?:\s*(?:a\.?m\.?|p\.?m\.?))?)",
+    flags=re.IGNORECASE,
+)
+_SCHEDULE_MUTATION = re.compile(r"\b(?:move|reschedule|cancel|rearrange)\b", flags=re.IGNORECASE)
 
 
 class AIServiceError(RuntimeError):
@@ -67,6 +86,13 @@ class DayPlanAdvice:
     plan_note: str
     provider: str
     used_fallback: bool
+    # AI guidance is keyed only to real task IDs.  The UI supplies every time,
+    # title, and commitment from a locally validated ``ScheduleBlock``.
+    task_guidance: dict[int, str] = field(default_factory=dict)
+    # Once local placement is complete, this maps a concrete, validated block
+    # identity to its task cue.  It is safe to persist and replay on refresh.
+    block_guidance: dict[str, str] = field(default_factory=dict)
+    pace: str = "Balanced"
     notice: str | None = None
 
 
@@ -113,6 +139,52 @@ def parse_day_plan_payload(
     focus_theme = str(value.get("focus_theme") or "Protect the most important block first.").strip()
     plan_note = str(value.get("plan_note") or "The schedule uses your real available time.").strip()
     return ordered_ids, focus_theme[:180], plan_note[:500]
+
+
+def _safe_task_guidance(value: object) -> str:
+    """Accept only concise task execution guidance, never a second schedule.
+
+    The AI is not a source of truth for timing.  Restricting its contribution to
+    a short task cue makes it impossible for a response to add a meeting,
+    invent a time block, or tell the person to move a protected commitment.
+    """
+    if not isinstance(value, str):
+        return ""
+    guidance = " ".join(value.split()).strip()
+    if _TIME_CLAIM.search(guidance) or _SCHEDULE_MUTATION.search(guidance):
+        return ""
+    return guidance[:240]
+
+
+def parse_day_plan_guidance(payload: str, allowed_task_ids: set[int]) -> dict[int, str]:
+    """Validate model task cues against the submitted task IDs.
+
+    Unknown, duplicate, malformed, and scheduling-mutating guidance is dropped.
+    The deterministic renderer will later show a cue only beside a locally
+    scheduled block for the matching ID.
+    """
+    value = json.loads(payload)
+    if not isinstance(value, dict):
+        raise ValueError("The AI provider did not return a plan object.")
+    raw_guidance = value.get("task_guidance", [])
+    if not isinstance(raw_guidance, list):
+        return {}
+
+    guidance_by_task: dict[int, str] = {}
+    for item in raw_guidance:
+        if not isinstance(item, dict):
+            continue
+        raw_id = item.get("task_id")
+        if isinstance(raw_id, bool):
+            continue
+        try:
+            task_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        guidance = _safe_task_guidance(item.get("focus"))
+        if task_id in allowed_task_ids and task_id not in guidance_by_task and guidance:
+            guidance_by_task[task_id] = guidance
+    return guidance_by_task
 
 
 class AIService:
@@ -273,6 +345,7 @@ class AIService:
         work_start: str,
         work_end: str,
         intention: str = "",
+        pace: str = "Balanced",
     ) -> DayPlanAdvice:
         """Ask the selected provider to prioritize actual work for one day.
 
@@ -281,6 +354,7 @@ class AIService:
         a non-AI plan under an AI call-to-action.
         """
         self.require_configuration()
+        pace_profile = get_day_pace(pace)
         eligible_tasks = [
             task
             for task in tasks
@@ -296,6 +370,7 @@ class AIService:
                 plan_note="Add a task, then DayCraft can turn it into a real time block.",
                 provider=self.model,
                 used_fallback=False,
+                pace=pace_profile.name,
             )
 
         task_context = [
@@ -321,12 +396,16 @@ class AIService:
 You are DayCraft's pragmatic daily-planning assistant. Choose the best order
 for a user's real task list on {selected_date.isoformat()}. Their workday is
 {work_start}–{work_end}. Calendar commitments are fixed and cannot move.
+The requested day pace is {pace_profile.name}: {pace_profile.description}
 
 Return JSON only with this exact shape:
 {{
   "ordered_task_ids": [integer task IDs, in recommended order],
   "focus_theme": "a concise, encouraging focus theme",
-  "plan_note": "one concise explanation of the plan"
+  "plan_note": "one concise explanation of the plan",
+  "task_guidance": [
+    {{"task_id": integer task ID, "focus": "one short execution cue for that task"}}
+  ]
 }}
 
 Rules:
@@ -334,6 +413,9 @@ Rules:
 - Order work realistically by urgency, importance, estimates, and fixed commitments.
 - The local planner will choose exact free time slots, so do not create times or move meetings.
 - Never claim that a task is complete.
+- Each ``task_guidance`` item must reference a supplied task ID and be a short,
+  time-free execution cue for that task. Do not mention a clock time, a calendar
+  event, moving or rescheduling anything, or an unsupplied task.
 
 User intention: {intention.strip() or "No additional preference provided."}
 Tasks: {json.dumps(task_context, ensure_ascii=False)}
@@ -344,6 +426,7 @@ Fixed commitments: {json.dumps(commitment_context, ensure_ascii=False)}
             ordered_ids, focus_theme, plan_note = parse_day_plan_payload(
                 response_text, set(fallback_order), fallback_order
             )
+            task_guidance = parse_day_plan_guidance(response_text, set(fallback_order))
         except AIConfigurationError:
             raise
         except Exception as exc:
@@ -356,6 +439,8 @@ Fixed commitments: {json.dumps(commitment_context, ensure_ascii=False)}
             plan_note=plan_note,
             provider=self.model,
             used_fallback=False,
+            task_guidance=task_guidance,
+            pace=pace_profile.name,
         )
 
     def generate(self, prompt: str, fallback: str) -> AIResponse:

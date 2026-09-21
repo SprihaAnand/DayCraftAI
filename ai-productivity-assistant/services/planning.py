@@ -82,6 +82,24 @@ class ScheduleTemplate:
     divisions: tuple[TemplateDivision, ...]
 
 
+@dataclass(frozen=True)
+class DayPace:
+    """A small, explicit guardrail for how full a generated day may become.
+
+    A pace is deliberately separate from a calendar commitment.  It selects a
+    deterministic template, leaves a predictable amount of task capacity
+    unused, and sets the transition buffer between task blocks.  This lets the
+    AI reason about the person's preferred day without being able to move a
+    real event or create a calendar time on its own.
+    """
+
+    name: str
+    template_id: str
+    description: str
+    task_capacity_ratio: float
+    buffer_minutes: int
+
+
 SCHEDULE_TEMPLATES: tuple[ScheduleTemplate, ...] = (
     ScheduleTemplate(
         id="balanced",
@@ -158,9 +176,53 @@ SCHEDULE_TEMPLATES: tuple[ScheduleTemplate, ...] = (
 )
 
 
+# These are intentionally the only customer-facing pace choices.  The
+# underlying template registry remains available for deterministic tests and
+# future advanced configuration, but the planner flow should not ask someone
+# to become a schedule designer before it can help them.
+DAY_PACES: tuple[DayPace, ...] = (
+    DayPace(
+        name="Chill",
+        template_id="balanced",
+        description="A lighter plan with recovery room and longer transitions.",
+        task_capacity_ratio=0.70,
+        buffer_minutes=20,
+    ),
+    DayPace(
+        name="Balanced",
+        template_id="balanced",
+        description="Meaningful progress with space for normal interruptions.",
+        task_capacity_ratio=0.86,
+        buffer_minutes=10,
+    ),
+    DayPace(
+        name="Work-heavy",
+        template_id="deep-work",
+        description="More focused capacity, with essential breaks still protected.",
+        task_capacity_ratio=1.0,
+        buffer_minutes=5,
+    ),
+)
+
+
 def list_schedule_templates() -> tuple[ScheduleTemplate, ...]:
     """Return the built-in templates in the order they should be shown in a UI."""
     return SCHEDULE_TEMPLATES
+
+
+def list_day_paces() -> tuple[DayPace, ...]:
+    """Return the three intentional day-density choices shown in the planner."""
+    return DAY_PACES
+
+
+def get_day_pace(value: str | None) -> DayPace:
+    """Resolve a customer-facing pace without silently accepting a typo."""
+    normalized = str(value or "Balanced").strip().lower().replace("_", "-")
+    for pace in DAY_PACES:
+        if pace.name.lower() == normalized:
+            return pace
+    choices = ", ".join(pace.name for pace in DAY_PACES)
+    raise ValueError(f"Unknown day pace '{value}'. Choose one of: {choices}.")
 
 
 def get_schedule_template(template_id: str) -> ScheduleTemplate:
@@ -218,6 +280,30 @@ def _free_intervals(
     if cursor < end:
         free.append((cursor, end))
     return free
+
+
+def _cap_task_slots_for_pace(
+    task_slots: list[tuple[int, int, TemplateDivision]], capacity_ratio: float
+) -> list[tuple[int, int, TemplateDivision]]:
+    """Keep deterministic recovery capacity before task placement begins.
+
+    The cap is applied to already-validated template windows, never to fixed
+    events or anchors.  It is therefore safe to make a Chill day lighter while
+    guaranteeing that a model cannot consume a protected commitment.
+    """
+    if not 0 < capacity_ratio <= 1:
+        raise ValueError("Day pace capacity must be between 0 and 1.")
+    total_capacity = sum(max(0, end - start) for start, end, _ in task_slots)
+    allowed_minutes = round(total_capacity * capacity_ratio)
+    capped: list[tuple[int, int, TemplateDivision]] = []
+    for slot_start, slot_end, division in task_slots:
+        if allowed_minutes <= 0:
+            break
+        duration = min(slot_end - slot_start, allowed_minutes)
+        if duration > 0:
+            capped.append((slot_start, slot_start + duration, division))
+            allowed_minutes -= duration
+    return capped
 
 
 def _fixed_blocks_for_window(
@@ -316,8 +402,9 @@ def build_template_schedule(
     template_id: str = "balanced",
     work_start: str | None = None,
     work_end: str | None = None,
-    buffer_minutes: int = 10,
+    buffer_minutes: int | None = None,
     task_order: list[int] | None = None,
+    pace: str | None = None,
 ) -> tuple[list[ScheduleBlock], list[dict[str, Any]]]:
     """Build a time-boxed daily plan from a reusable template.
 
@@ -329,12 +416,22 @@ def build_template_schedule(
     or ritual has ``block_type='template_anchor'`` and no ``task_id``; work
     placed for a task has ``block_type='task'`` and that task's id.  When
     supplied, ``task_order`` is honored first, so an AI can choose the order
-    while this deterministic engine remains responsible for safe timing.
+    while this deterministic engine remains responsible for safe timing.  A
+    ``pace`` applies an explicit capacity ceiling and transition buffer; it
+    never changes fixed commitments.
     """
-    if buffer_minutes < 0:
+    pace_profile = get_day_pace(pace) if pace is not None else None
+    effective_buffer_minutes = (
+        buffer_minutes
+        if buffer_minutes is not None
+        else (pace_profile.buffer_minutes if pace_profile is not None else 10)
+    )
+    if effective_buffer_minutes < 0:
         raise ValueError("Buffer minutes cannot be negative.")
 
-    template = get_schedule_template(template_id)
+    template = get_schedule_template(
+        pace_profile.template_id if pace_profile is not None else template_id
+    )
     start_value = work_start or template.default_work_start
     end_value = work_end or template.default_work_end
     start_of_day = minutes_from_time(start_value)
@@ -372,6 +469,8 @@ def build_template_schedule(
         for free_start, free_end in _free_intervals(division_start, division_end, occupied):
             task_slots.append((free_start, free_end, division))
     task_slots.sort(key=lambda slot: (slot[0], slot[1]))
+    if pace_profile is not None:
+        task_slots = _cap_task_slots_for_pace(task_slots, pace_profile.task_capacity_ratio)
 
     proposed: list[ScheduleBlock] = []
     unscheduled: list[dict[str, Any]] = []
@@ -392,7 +491,7 @@ def build_template_schedule(
                         block_type="task",
                     )
                 )
-                next_start = slot_start + duration + buffer_minutes
+                next_start = slot_start + duration + effective_buffer_minutes
                 if next_start >= slot_end:
                     task_slots.pop(slot_index)
                 else:
@@ -418,14 +517,24 @@ def build_daily_plan(
     *,
     work_start: str = "09:00",
     work_end: str = "17:30",
-    buffer_minutes: int = 10,
+    buffer_minutes: int | None = None,
     task_order: list[int] | None = None,
+    pace: str | None = None,
 ) -> tuple[list[ScheduleBlock], list[dict[str, Any]]]:
     """Fit incomplete tasks into real gaps around existing calendar events.
 
     It never fabricates calendar time: existing events retain their stored time,
     and every proposed task block comes from a verified free interval.
     """
+    pace_profile = get_day_pace(pace) if pace is not None else None
+    effective_buffer_minutes = (
+        buffer_minutes
+        if buffer_minutes is not None
+        else (pace_profile.buffer_minutes if pace_profile is not None else 10)
+    )
+    if effective_buffer_minutes < 0:
+        raise ValueError("Buffer minutes cannot be negative.")
+
     start_of_day = minutes_from_time(work_start)
     end_of_day = minutes_from_time(work_end)
     if start_of_day >= end_of_day:
@@ -463,6 +572,16 @@ def build_daily_plan(
         cursor = max(cursor, block_end)
     if cursor < end_of_day:
         free_slots.append((cursor, end_of_day))
+    if pace_profile is not None:
+        # Reuse the same capacity guardrail without pretending these simple
+        # gaps are template divisions.  Category is not consulted by the
+        # placement loop below.
+        fallback_division = TemplateDivision("Open work", work_start, work_end, "General", "task")
+        capped = _cap_task_slots_for_pace(
+            [(start, end, fallback_division) for start, end in free_slots],
+            pace_profile.task_capacity_ratio,
+        )
+        free_slots = [(start, end) for start, end, _ in capped]
 
     open_tasks = [
         task
@@ -498,7 +617,7 @@ def build_daily_plan(
                         task_id=int(task["id"]),
                     )
                 )
-                free_slots[slot_index] = (block_end + buffer_minutes, slot_end)
+                free_slots[slot_index] = (block_end + effective_buffer_minutes, slot_end)
                 if free_slots[slot_index][0] >= slot_end:
                     slot_index += 1
                 placed = True

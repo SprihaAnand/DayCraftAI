@@ -1,10 +1,10 @@
 # DayCraft
 
-DayCraft is an AI-first daily planner for people who want a usable day, not another pile of tasks. It combines a private task inbox, protected calendar commitments, an AI-selected task order, a visual time canvas, and a focused work timer.
+DayCraft is an AI-first daily planner for people who want a usable day, not another pile of tasks. It combines a private task inbox, reviewable natural-language capture, protected calendar commitments, an AI-written agenda, a secondary visual time canvas, and a focused work timer.
 
 The product flow is intentionally small:
 
-**Capture → choose a rhythm → protect time → craft with AI → focus → review.**
+**Capture → choose a day pace → protect time → craft a written AI agenda → see it on the clock → focus → review.**
 
 The interface is an original schedule-studio implementation informed by the real calendar canvas of [Morgen Schedule Builder](https://www.morgen.so/schedule-builder), the focused action hierarchy of [Calendly](https://calendly.com/), the contextual schedule-side-panel pattern seen in [Dribbble's scheduling explorations](https://dribbble.com/search/schedule-management-dashboard), and a restrained touch of the visual energy in [Spriha's portfolio](https://sprihaanand.github.io/MyPortfolio/). It does not copy their assets or interface.
 
@@ -12,11 +12,12 @@ The interface is an original schedule-studio implementation informed by the real
 
 - Email-and-password accounts with salted PBKDF2 password hashes.
 - Durable, user-scoped SQLite data. Sign back in with the same email and password to find your tasks, plans, focus sessions, check-ins, and connected Google tokens.
-- A purpose-built **Today** canvas with a real vertical 30-minute time grid rather than a generic dashboard chart.
-- Four reusable day rhythms — **Balanced day**, **Deep work day**, **Meeting day**, and **Early focus** — with named focus windows, deliberate breaks, lunch/reset time, and a closeout. Save the time divisions alone, or let AI fill them with real tasks.
+- A review-first **Drop in your day** capture flow. Type a loose list such as `Lunch from 1 to 2, workout, meeting at 9 for half an hour, read 10 pages`; an explicit time range or a start plus duration becomes a protected commitment, while the remaining items stay flexible tasks. Nothing is stored until the user reviews and confirms it.
+- Three intentional day paces — **Chill**, **Balanced**, and **Work-heavy**. They set the deterministic template, capacity, and transition room so a person can say how full the day should feel without manually designing a calendar.
 - Gemini or OpenAI planning. An AI provider is required to craft a daily plan; DayCraft never silently substitutes a local heuristic for an AI-generated plan.
 - Session-only AI keys entered in the browser, plus deployment-owned environment keys. Browser keys are never written to SQLite, exported, or placed in URLs, and they are cleared on sign-out.
-- Local schedule validation: AI can order only task IDs from the submitted task list; DayCraft itself assigns the time slots and preserves fixed commitments.
+- An **AI-written day plan first**: Gemini or OpenAI chooses an order and gives concise, time-free task cues. DayCraft then builds the written agenda from locally validated times and protected commitments. The calendar canvas is a secondary mirror of that agenda, not the primary answer or a source of AI-created times.
+- Local schedule validation: AI can reference only task IDs from the submitted task list. DayCraft itself assigns time slots, preserves fixed commitments, and rejects model guidance that attempts to add times or move calendar reality.
 - Google Calendar OAuth with encrypted refresh tokens. Import upcoming commitments, then explicitly sync individual DayCraft blocks to the connected primary calendar.
 - Gmail OAuth with the minimum `gmail.send` permission. DayCraft cannot read the inbox; every email needs an explicit compose-and-send confirmation.
 - A local Model Context Protocol (MCP) server with user-scoped task, Calendar, and Gmail tools. Remote Calendar writes and Gmail sends require an explicit `confirm=true` guard.
@@ -57,7 +58,11 @@ Copy-Item ai-productivity-assistant\.env.example ai-productivity-assistant\.env
 streamlit run ai-productivity-assistant\app.py
 ```
 
-Open the URL Streamlit prints (normally `http://localhost:8501`). Create an account, use **Tasks** to add work, then open **Today**. Choose a day rhythm, protect commitments, and select **Build my time blocks** to create the plan. The default local database is `ai-productivity-assistant/data/daycraft.db`; keep that directory on persistent storage if you want data to survive redeployments.
+Open the URL Streamlit prints (normally `http://localhost:8501`). Create an account, use **Tasks → Drop in your day** to capture work in plain language, review the proposed tasks and commitments, then open **Today**. Choose **Chill**, **Balanced**, or **Work-heavy**, protect any remaining commitments, and select **Create my written plan**. Read the agenda first; the time canvas beneath it is the secondary clock view. The default local database is `ai-productivity-assistant/data/daycraft.db`; keep that directory on persistent storage if you want data to survive redeployments.
+
+### Refreshing and restarting locally
+
+Saved Python/UI changes normally hot-reload; refresh the browser if the page does not rerun on its own. A full local restart is safest after changing `.env`, dependencies, the Python version, or `.streamlit/config.toml`: press `Ctrl+C` in the terminal, then run `streamlit run ai-productivity-assistant\app.py` again. An app restart clears browser-only session state, so you may need to sign in again and re-enter a session-only AI key.
 
 ## Deploy a public Streamlit URL
 
@@ -69,6 +74,12 @@ This repository is prepared for [Streamlit Community Cloud](https://share.stream
 4. Choose a memorable subdomain, for example `daycraft-ai`. Its public URL will be `https://daycraft-ai.streamlit.app`.
 5. In **Advanced settings**, choose Python 3.12 and paste root-level TOML secrets. Start from [`secrets.toml.example`](ai-productivity-assistant/.streamlit/secrets.toml.example), replacing every placeholder. Do not put these values under a TOML section: DayCraft reads them as environment variables.
 6. Deploy, then set the app's sharing setting to public if Community Cloud does not already make it public.
+
+### When a GitHub change becomes visible
+
+After you push a commit to the repository and branch selected in Community Cloud, Cloud should detect it and build a new deployment automatically. Check the deployment log for that commit; a manual reboot is not normally required. Use **Reboot app** only after the new deployment finishes if the running process is stuck or a just-updated Cloud secret has not been picked up. A reboot cannot deploy code that has not been pushed.
+
+If Cloud still serves an old or inaccessible app after a successful push, verify its repository, branch, and entry point, then use the recovery steps below. In particular, an old deployment created with the wrong Python runtime should be recreated with Python 3.12 rather than repeatedly rebooted.
 
 For a Gemini-backed public preview, the secret block should look like this (with newly generated, private values):
 
@@ -137,7 +148,7 @@ GEMINI_MODEL=gemini-3.8-flash
 
 Do not hardcode a key in Python or commit `.env`. Gemini calls use the maintained `google-genai` Interactions API and OpenAI calls use the Responses API. Both are one-shot requests with provider-side storage disabled (`store=False`). For a day plan, AI receives only task planning fields and fixed-commitment timing, returns a constrained ordering, and cannot create or move calendar events by itself. See the official [OpenAI Responses API reference](https://platform.openai.com/docs/api-reference/responses) and [Google Gen AI SDK documentation](https://ai.google.dev/gemini-api/docs/libraries).
 
-If a provider key is absent or the provider returns unusable planning output, DayCraft refuses to save a non-AI day plan and explains the problem. Lightweight Focus/Review coaching may show a local fallback because it cannot change your schedule.
+If a provider key is absent or the provider returns unusable planning output, DayCraft refuses to save a non-AI day plan and explains the problem. For a valid request, the provider creates the theme, priority order, and short task cues; DayCraft creates the exact, validated written agenda and calendar blocks locally. Lightweight Focus/Review coaching may show a local fallback because it cannot change your schedule.
 
 ## Connect Google Calendar
 
@@ -202,12 +213,13 @@ The last two tools return a confirmation requirement unless `confirm=true` is ex
 
 ## How the product works
 
-1. **Capture** — Add tasks with a priority, honest estimate, and optional due date in **Tasks**.
-2. **Choose a rhythm** — In **Today**, select Balanced, Deep work, Meeting, or Early focus. Each has actual start/end time divisions, recovery breaks, and a closeout. Use **Save time divisions** when you want to keep the structure before adding work.
-3. **Protect time** — Add fixed commitments in **Today** or import Google Calendar events. These always win over a rhythm and can never be moved by AI.
-4. **Craft** — Gemini or OpenAI prioritizes only the actual task IDs. DayCraft’s local scheduler fits that order only inside genuine template windows and around protected commitments; it does not alter Calendar events.
-5. **Act** — Start a task-linked Focus timer from the plan. Completed minutes are persisted.
-6. **Review** — Add a short check-in and view trends based only on activity the user recorded.
+1. **Capture** — In **Tasks**, use **Drop in your day** for a natural list or add one precise task manually. The parser is deterministic and bounded: only an explicit same-day range or a start plus duration is proposed as protected time. Review every item before it is saved.
+2. **Choose a pace** — In **Today**, select **Chill**, **Balanced**, or **Work-heavy**. The pace controls a local template, task capacity, and transition buffer while retaining essential breaks and a closeout.
+3. **Protect time** — Add fixed commitments in **Today**, accept reviewed commitments from quick capture, or import Google Calendar events. These always win and can never be moved by AI.
+4. **Craft the written agenda** — Gemini or OpenAI prioritizes only actual task IDs and supplies brief task cues. DayCraft’s local scheduler fits that order only inside verified template windows and around protected commitments, then presents the resulting text agenda first.
+5. **See the clock** — The vertical time canvas below the agenda mirrors those validated blocks. It is useful for scanning the day and explicitly syncing an individual DayCraft block to Google Calendar, but it does not replace the written plan.
+6. **Act** — Start a task-linked Focus timer from the plan. Completed minutes are persisted.
+7. **Review** — Add a short check-in and view trends based only on activity the user recorded.
 
 ## Verify the project
 
@@ -219,7 +231,7 @@ Run these commands from `ai-productivity-assistant`:
 .\.venv\Scripts\python.exe -m ruff check .
 ```
 
-The test suite uses mocks for Gemini, OpenAI, Google OAuth, Gmail, and Calendar so it never sends an email, creates a real event, or consumes an API key. It covers account isolation, durable data, session-key UI flow, AI provider contracts, OAuth state binding, encrypted tokens, Gmail header-injection protection, MCP user scoping, ordinary planner gap placement, all four schedule-template rhythms, and all primary Streamlit routes.
+The test suite uses mocks for Gemini, OpenAI, Google OAuth, Gmail, and Calendar so it never sends an email, creates a real event, or consumes an API key. It covers account isolation, durable data, session-key UI flow, AI provider contracts and safety filtering, OAuth state binding, encrypted tokens, Gmail header-injection protection, MCP user scoping, natural-language capture review rules, paced planner capacity, ordinary planner gap placement, built-in schedule templates, and all primary Streamlit routes.
 
 ## Deployment and security notes
 

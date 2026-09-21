@@ -52,7 +52,7 @@ class AppSmokeTests(unittest.TestCase):
         app.text_input[4].input("StrongPass123")
         next(button for button in app.button if button.label == "Create my workspace").click().run()
         self.assertEqual(len(app.exception), 0)
-        craft_button = next(button for button in app.button if button.label == "Build my time blocks")
+        craft_button = next(button for button in app.button if button.label == "Create my written plan")
         self.assertTrue(craft_button.disabled)
         if configure_ai:
             next(
@@ -64,6 +64,15 @@ class AppSmokeTests(unittest.TestCase):
             self.assertEqual(len(app.exception), 0)
             self.assertFalse(any(item.label == "Gemini API key" for item in app.text_input))
         return app
+
+    def test_signed_out_login_has_no_workspace_navigation(self) -> None:
+        """The public route must not expose empty workspace navigation links."""
+        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertFalse(app.get("navigation"))
+        self.assertFalse(app.get("page_link"))
+        self.assertTrue(any(item.label == "Email" for item in app.text_input))
 
     def test_account_onboarding_and_all_workspace_views_render(self) -> None:
         app = self._signed_in_app()
@@ -89,7 +98,7 @@ class AppSmokeTests(unittest.TestCase):
 
         app.switch_page("app_pages/day_plan.py").run()
         self.assertFalse(
-            next(button for button in app.button if button.label == "Build my time blocks").disabled
+                next(button for button in app.button if button.label == "Create my written plan").disabled
         )
         database = Database(os.environ["DAYCRAFT_DATABASE_PATH"])
         user = database.get_user_by_email("taylor@example.com")
@@ -102,13 +111,45 @@ class AppSmokeTests(unittest.TestCase):
             used_fallback=False,
         )
         with patch("services.ai.AIService.create_day_plan", return_value=ai_advice):
-            next(button for button in app.button if button.label == "Build my time blocks").click().run()
+            next(button for button in app.button if button.label == "Create my written plan").click().run()
         self.assertEqual(len(app.exception), 0)
 
         events = database.list_events(user["id"])
         self.assertTrue(
             any(event["title"] == "Draft launch brief" and event["source"] == "planner" for event in events)
         )
+
+    def test_quick_capture_requires_an_explicit_review_before_writing_items(self) -> None:
+        app = self._signed_in_app()
+        app.switch_page("app_pages/task_backlog.py").run()
+        next(
+            text_area
+            for text_area in app.text_area
+            if text_area.label == "Tasks and commitments"
+        ).input(
+            "Lunch from 1 to 2, workout, meeting at 9 for half hour, read 10 pages"
+        )
+        next(button for button in app.button if button.label == "Review items").click().run()
+        self.assertEqual(len(app.exception), 0)
+
+        database = Database(os.environ["DAYCRAFT_DATABASE_PATH"])
+        user = database.get_user_by_email("taylor@example.com")
+        self.assertFalse(database.list_tasks(user["id"]))
+        self.assertFalse(database.list_events(user["id"]))
+        self.assertTrue(any(item.label == "Add reviewed items" for item in app.button))
+
+        next(
+            checkbox
+            for checkbox in app.checkbox
+            if checkbox.label.startswith("I reviewed these items")
+        ).check()
+        next(button for button in app.button if button.label == "Add reviewed items").click().run()
+        self.assertEqual(len(app.exception), 0)
+
+        task_titles = {task["title"] for task in database.list_tasks(user["id"])}
+        event_titles = {event["title"] for event in database.list_events(user["id"])}
+        self.assertEqual(task_titles, {"workout", "read 10 pages"})
+        self.assertEqual(event_titles, {"Lunch", "meeting"})
 
     def test_a_saved_rhythm_creates_timed_breaks_without_touching_calendar_commitments(self) -> None:
         app = self._signed_in_app()

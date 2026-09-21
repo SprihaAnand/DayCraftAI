@@ -5,7 +5,9 @@ from datetime import date
 
 from services.planning import (
     build_template_schedule,
+    get_day_pace,
     get_schedule_template,
+    list_day_paces,
     list_schedule_templates,
     minutes_from_time,
     template_default_work_hours,
@@ -33,6 +35,12 @@ def _overlaps(left_start: str, left_end: str, right_start: str, right_end: str) 
 
 
 class ScheduleTemplateTests(unittest.TestCase):
+    def test_day_pace_registry_has_only_the_three_customer_choices(self) -> None:
+        self.assertEqual([pace.name for pace in list_day_paces()], ["Chill", "Balanced", "Work-heavy"])
+        self.assertEqual(get_day_pace("work-heavy").template_id, "deep-work")
+        with self.assertRaisesRegex(ValueError, "Unknown day pace"):
+            get_day_pace("maximal")
+
     def test_registry_exposes_four_distinct_templates_and_defaults(self) -> None:
         templates = list_schedule_templates()
         self.assertEqual(
@@ -201,6 +209,31 @@ class ScheduleTemplateTests(unittest.TestCase):
             build_template_schedule(PLAN_DATE, [], [], work_start="17:00", work_end="09:00")
         with self.assertRaisesRegex(ValueError, "negative"):
             build_template_schedule(PLAN_DATE, [], [], buffer_minutes=-1)
+
+    def test_chill_pace_leaves_more_unscheduled_capacity_without_touching_commitments(self) -> None:
+        commitments = [
+            {
+                "title": "Fixed review",
+                "start_time": "12:00",
+                "end_time": "12:30",
+                "category": "Meeting",
+                "source": "google",
+                "is_fixed": 1,
+            }
+        ]
+        tasks = [_task(index, f"Task {index}", 70) for index in range(1, 6)]
+        chill_blocks, chill_unscheduled = build_template_schedule(
+            PLAN_DATE, tasks, commitments, pace="Chill"
+        )
+        heavy_blocks, heavy_unscheduled = build_template_schedule(
+            PLAN_DATE, tasks, commitments, pace="Work-heavy"
+        )
+
+        self.assertGreaterEqual(len(chill_unscheduled), len(heavy_unscheduled))
+        for blocks in (chill_blocks, heavy_blocks):
+            review = next(block for block in blocks if block.title == "Fixed review")
+            self.assertEqual((review.start_time, review.end_time), ("12:00", "12:30"))
+            self.assertTrue(review.is_fixed)
 
 
 if __name__ == "__main__":

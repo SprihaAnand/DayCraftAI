@@ -7,9 +7,9 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from components.auth import render_authentication
+from components.auth import active_user, render_authentication
 from components.sidebar import render_sidebar
-from components.theme import apply_theme, configure_page
+from components.theme import apply_public_shell, apply_theme, configure_page
 from services.calendar import PROVIDER as CALENDAR_PROVIDER
 from services.calendar import CalendarError, CalendarService
 from services.database import Database
@@ -20,6 +20,10 @@ configure_page()
 load_dotenv(Path(__file__).with_name(".env"))
 
 _PENDING_GOOGLE_CALLBACK = "pending_google_callback"
+
+
+def _public_login_route() -> None:
+    """Register the unauthenticated route without rendering workspace content."""
 
 
 def _capture_google_callback() -> None:
@@ -149,9 +153,20 @@ def main() -> None:
             icon=":material/lock:",
         )
 
-    user = render_authentication(database)
+    user = active_user(database)
     if user is None:
-        st.stop()
+        # Calling navigation before stopping is important: it switches Streamlit
+        # out of legacy ``pages/`` discovery, while ``hidden`` keeps the login
+        # screen free of workspace links and the empty sidebar they can create.
+        public_page = st.navigation(
+            [st.Page(_public_login_route, title="Sign in", default=True)],
+            position="hidden",
+        )
+        apply_public_shell()
+        user = render_authentication(database)
+        if user is None:
+            public_page.run()
+            st.stop()
 
     if _complete_pending_google_callback(
         database, calendar, gmail, expected_user_id=user.id

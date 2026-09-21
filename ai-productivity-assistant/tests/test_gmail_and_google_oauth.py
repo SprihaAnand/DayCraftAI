@@ -111,13 +111,17 @@ class GmailAndGoogleOAuthTests(unittest.TestCase):
         finally:
             connection.close()
         self.assertIn("provider", columns)
+        self.assertIn("code_verifier", columns)
         self.assertEqual(
             self.database.oauth_state_provider(state, expected_user_id=self.user["id"]),
             "google_calendar",
         )
 
     def test_gmail_state_is_provider_bound_and_single_use(self) -> None:
-        state = self.database.create_oauth_state(self.user["id"], provider=GMAIL_PROVIDER)
+        verifier = "A" * 43
+        state = self.database.create_oauth_state(
+            self.user["id"], provider=GMAIL_PROVIDER, code_verifier=verifier
+        )
 
         self.assertEqual(
             self.database.oauth_state_provider(state, expected_user_id=self.user["id"]), GMAIL_PROVIDER
@@ -127,6 +131,12 @@ class GmailAndGoogleOAuthTests(unittest.TestCase):
                 state, expected_user_id=self.user["id"], expected_provider="google_calendar"
             )
         )
+        transaction = self.database.consume_oauth_transaction(
+            state, expected_user_id=self.user["id"], expected_provider=GMAIL_PROVIDER
+        )
+        self.assertIsNotNone(transaction)
+        self.assertEqual(transaction.user_id if transaction else None, self.user["id"])
+        self.assertEqual(transaction.code_verifier if transaction else None, verifier)
         self.assertIsNone(self.database.consume_oauth_state(state, expected_user_id=self.user["id"]))
 
     def test_calendar_authorization_url_remains_calendar_bound(self) -> None:
@@ -143,7 +153,13 @@ class GmailAndGoogleOAuthTests(unittest.TestCase):
 
     def test_gmail_authorization_url_and_callback_store_an_encrypted_token(self) -> None:
         flow = _Flow()
-        with patch.object(self.gmail, "_flow", return_value=flow):
+        verifier_arguments: list[str | None] = []
+
+        def make_flow(*, code_verifier: str | None = None) -> _Flow:
+            verifier_arguments.append(code_verifier)
+            return flow
+
+        with patch.object(self.gmail, "_flow", side_effect=make_flow):
             authorization_url = self.gmail.authorization_url(self.user["id"])
         self.assertEqual(authorization_url, "https://accounts.google.test/consent")
         self.assertIsNotNone(flow.authorization_state)
@@ -152,13 +168,17 @@ class GmailAndGoogleOAuthTests(unittest.TestCase):
             GMAIL_PROVIDER,
         )
 
-        with patch.object(self.gmail, "_flow", return_value=flow):
+        with patch.object(self.gmail, "_flow", side_effect=make_flow):
             completed_user_id = self.gmail.complete_authorization(
                 flow.authorization_state or "", "authorization-code", expected_user_id=self.user["id"]
             )
         encrypted_token = self.database.get_oauth_token(self.user["id"], GMAIL_PROVIDER)
         self.assertEqual(completed_user_id, self.user["id"])
         self.assertEqual(flow.code, "authorization-code")
+        self.assertEqual(len(verifier_arguments), 2)
+        self.assertIsNotNone(verifier_arguments[0])
+        self.assertEqual(verifier_arguments[0], verifier_arguments[1])
+        self.assertGreaterEqual(len(verifier_arguments[0] or ""), 43)
         self.assertIsNotNone(encrypted_token)
         self.assertNotIn("test-access-token", encrypted_token or "")
         decrypted = self.gmail._cipher().decrypt((encrypted_token or "").encode("utf-8"))

@@ -92,6 +92,18 @@ Generate a fresh Fernet key locally with:
 
 The Google redirect URI must match both this secret and the URI in Google Cloud **exactly**. Do not use `localhost`, Markdown brackets, or a trailing path unless it appears identically in both places.
 
+### Troubleshoot a Google return that says “You do not have access to this app”
+
+That page is served by Streamlit Community Cloud before DayCraft receives Google’s callback. It is not a Google Calendar or Gmail permission error. First make the public app URL work in a private browser window, then retry the Google connection.
+
+1. Sign in at [Streamlit Community Cloud](https://share.streamlit.io/) with the GitHub account that owns this repository, then select the `SprihaAnand` workspace.
+2. Confirm the deployment uses repository `SprihaAnand/DayCraftAI`, branch `main`, and entry point `ai-productivity-assistant/app.py`.
+3. In **Sharing**, select **This app is public and searchable**. A public DayCraft preview can still use its own in-app account system; its deployment secrets remain server-side.
+4. If the existing app was deployed with the wrong Python version or has become detached from its GitHub coordinates, save its secrets privately, delete it, and deploy it again with Python **3.12**. Reuse the custom subdomain if it is available. Community Cloud requires redeployment to change Python versions.
+5. Once the root URL loads DayCraft, copy that final URL exactly into both `GOOGLE_REDIRECT_URI` in Cloud Secrets and the Google OAuth client’s **Authorized redirect URIs**. Do not use a Markdown link, a different subdomain, or a slash variant.
+
+Export any useful data before deleting a running Cloud app. Community Cloud local files, including this project’s SQLite database, are not a durable production data store.
+
 ### Important: public preview vs. production
 
 Community Cloud is a good way to share an AI-planning preview, but it is not a production data store for this app. Its local files are not guaranteed to persist, whereas DayCraft currently stores accounts, tasks, and encrypted OAuth refresh tokens in SQLite. Do not advertise durable public accounts until the data layer is moved to a managed database.

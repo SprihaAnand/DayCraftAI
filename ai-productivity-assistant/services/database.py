@@ -13,6 +13,7 @@ import secrets
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,15 @@ def _as_iso_date(value: date | str | None) -> str | None:
     if value is None or value == "":
         return None
     return value.isoformat() if isinstance(value, date) else str(value)
+
+
+@dataclass(frozen=True)
+class OAuthTransaction:
+    """A one-time Google authorization transaction kept only until callback completion."""
+
+    user_id: int
+    provider: str
+    code_verifier: str | None
 
 
 class Database:
@@ -142,6 +152,7 @@ class Database:
             state TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             provider TEXT NOT NULL DEFAULT 'google_calendar',
+            code_verifier TEXT,
             expires_at TEXT NOT NULL
         );
 
@@ -165,6 +176,11 @@ class Database:
                     "ALTER TABLE oauth_states "
                     "ADD COLUMN provider TEXT NOT NULL DEFAULT 'google_calendar'"
                 )
+            # PKCE requires the verifier created with the authorization URL to
+            # survive the browser redirect. It is short-lived and removed with
+            # the state after a completed, expired, or malformed transaction.
+            if "code_verifier" not in state_columns:
+                connection.execute("ALTER TABLE oauth_states ADD COLUMN code_verifier TEXT")
             connection.execute("PRAGMA journal_mode = WAL")
 
     # Users -----------------------------------------------------------------
@@ -621,7 +637,12 @@ class Database:
             )
 
     def create_oauth_state(
-        self, user_id: int, minutes_valid: int = 10, *, provider: str = "google_calendar"
+        self,
+        user_id: int,
+        minutes_valid: int = 10,
+        *,
+        provider: str = "google_calendar",
+        code_verifier: str | None = None,
     ) -> str:
         """Create a short-lived OAuth state bound to one user and integration.
 
@@ -630,13 +651,17 @@ class Database:
         callback issued for Gmail cannot complete a Calendar connection.
         """
         clean_provider = _oauth_provider(provider)
+        clean_code_verifier = _oauth_code_verifier(code_verifier)
         state = secrets.token_urlsafe(32)
         expires_at = (datetime.now(UTC) + timedelta(minutes=minutes_valid)).isoformat()
         with self._connection() as connection:
             connection.execute("DELETE FROM oauth_states WHERE expires_at < ?", (_utc_now(),))
             connection.execute(
-                "INSERT INTO oauth_states (state, user_id, provider, expires_at) VALUES (?, ?, ?, ?)",
-                (state, user_id, clean_provider, expires_at),
+                """
+                INSERT INTO oauth_states (state, user_id, provider, code_verifier, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (state, user_id, clean_provider, clean_code_verifier, expires_at),
             )
         return state
 
@@ -646,17 +671,68 @@ class Database:
         """Return a valid state’s provider without consuming it.
 
         The app uses this narrow lookup solely to dispatch a shared Google OAuth
-        callback to Calendar or Gmail. Invalid, expired, and cross-account states
-        are removed rather than revealing their provider.
+        callback to Calendar or Gmail. Invalid and expired states are removed.
+        A valid state for another signed-in user is deliberately retained so the
+        callback tab can sign in to the initiating DayCraft account and retry.
         """
         with self._connection() as connection:
             row = connection.execute(
                 "SELECT user_id, provider, expires_at FROM oauth_states WHERE state = ?", (state,)
             ).fetchone()
-            if not row or not _valid_oauth_state(row, expected_user_id):
+            if not row:
+                return None
+            if _oauth_state_is_expired_or_malformed(row):
                 connection.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
                 return None
+            if expected_user_id is not None and int(row["user_id"]) != int(expected_user_id):
+                return None
         return _oauth_provider(str(row["provider"] or "google_calendar"))
+
+    def consume_oauth_transaction(
+        self,
+        state: str,
+        expected_user_id: int | None = None,
+        *,
+        expected_provider: str | None = None,
+    ) -> OAuthTransaction | None:
+        """Atomically consume a valid, user- and provider-bound OAuth transaction.
+
+        A wrong account or provider does not consume a still-valid state: the
+        OAuth callback is allowed to prompt for the original DayCraft account.
+        Invalid and expired records are removed. The conditional delete prevents
+        two callbacks from successfully consuming the same authorization code.
+        """
+        clean_expected_provider = _oauth_provider(expected_provider) if expected_provider else None
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT user_id, provider, code_verifier, expires_at FROM oauth_states WHERE state = ?", (state,)
+            ).fetchone()
+            if not row:
+                return None
+            if _oauth_state_is_expired_or_malformed(row):
+                connection.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+                return None
+
+            user_id = int(row["user_id"])
+            provider = _oauth_provider(str(row["provider"] or "google_calendar"))
+            try:
+                code_verifier = _oauth_code_verifier(row["code_verifier"])
+            except (KeyError, ValueError):
+                connection.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+                return None
+            if expected_user_id is not None and user_id != int(expected_user_id):
+                return None
+            if clean_expected_provider is not None and provider != clean_expected_provider:
+                return None
+
+            cursor = connection.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+            if cursor.rowcount != 1:
+                return None
+        return OAuthTransaction(
+            user_id=user_id,
+            provider=provider,
+            code_verifier=code_verifier,
+        )
 
     def consume_oauth_state(
         self,
@@ -665,19 +741,11 @@ class Database:
         *,
         expected_provider: str | None = None,
     ) -> int | None:
-        """Consume a state once, optionally binding it to the active user session."""
-        clean_expected_provider = _oauth_provider(expected_provider) if expected_provider else None
-        with self._connection() as connection:
-            row = connection.execute(
-                "SELECT user_id, provider, expires_at FROM oauth_states WHERE state = ?", (state,)
-            ).fetchone()
-            connection.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
-        if not row or not _valid_oauth_state(row, expected_user_id):
-            return None
-        provider = _oauth_provider(str(row["provider"] or "google_calendar"))
-        if clean_expected_provider is not None and provider != clean_expected_provider:
-            return None
-        return int(row["user_id"])
+        """Consume a state once, preserving the older user-id-only API."""
+        transaction = self.consume_oauth_transaction(
+            state, expected_user_id=expected_user_id, expected_provider=expected_provider
+        )
+        return transaction.user_id if transaction else None
 
 
 def _oauth_provider(value: str) -> str:
@@ -688,14 +756,25 @@ def _oauth_provider(value: str) -> str:
     return provider
 
 
-def _valid_oauth_state(row: sqlite3.Row, expected_user_id: int | None) -> bool:
+def _oauth_code_verifier(value: object) -> str | None:
+    """Validate the RFC 7636 verifier retained only for one OAuth round trip."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not 43 <= len(value) <= 128:
+        raise ValueError("OAuth PKCE verifier must contain 43 to 128 characters.")
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    if any(character not in allowed for character in value):
+        raise ValueError("OAuth PKCE verifier contains invalid characters.")
+    return value
+
+
+def _oauth_state_is_expired_or_malformed(row: sqlite3.Row) -> bool:
     try:
         expires_at = datetime.fromisoformat(str(row["expires_at"]))
-        owner_id = int(row["user_id"])
-    except (TypeError, ValueError):
-        return False
+        int(row["user_id"])
+        _oauth_provider(str(row["provider"] or "google_calendar"))
+    except (TypeError, ValueError, KeyError):
+        return True
     if expires_at.tzinfo is None:
-        return False
-    return expires_at > datetime.now(UTC) and (
-        expected_user_id is None or owner_id == expected_user_id
-    )
+        return True
+    return expires_at <= datetime.now(UTC)

@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import re
+import secrets
 from email.message import EmailMessage
 from email.utils import getaddresses
 from typing import Any
@@ -67,7 +68,7 @@ class GmailService:
         if not self.is_configured:
             raise GmailError(self.configuration_message)
 
-    def _flow(self):
+    def _flow(self, *, code_verifier: str | None = None):
         self._ensure_configured()
         try:
             from google_auth_oauthlib.flow import Flow
@@ -82,12 +83,21 @@ class GmailService:
                 "redirect_uris": [self.redirect_uri],
             }
         }
-        return Flow.from_client_config(client_config, scopes=[GMAIL_SCOPE], redirect_uri=self.redirect_uri)
+        return Flow.from_client_config(
+            client_config,
+            scopes=[GMAIL_SCOPE],
+            redirect_uri=self.redirect_uri,
+            code_verifier=code_verifier,
+            autogenerate_code_verifier=False,
+        )
 
     def authorization_url(self, user_id: int) -> str:
         """Create a one-time Gmail-specific state and its Google consent URL."""
-        flow = self._flow()
-        state = self.database.create_oauth_state(user_id, provider=PROVIDER)
+        code_verifier = _new_pkce_verifier()
+        flow = self._flow(code_verifier=code_verifier)
+        state = self.database.create_oauth_state(
+            user_id, provider=PROVIDER, code_verifier=code_verifier
+        )
         authorization_url, _ = flow.authorization_url(
             access_type="offline",
             prompt="consent",
@@ -97,24 +107,26 @@ class GmailService:
 
     def complete_authorization(self, state: str, code: str, *, expected_user_id: int) -> int:
         """Exchange a callback only when it belongs to this user’s Gmail flow."""
-        user_id = self.database.consume_oauth_state(
+        transaction = self.database.consume_oauth_transaction(
             state, expected_user_id=expected_user_id, expected_provider=PROVIDER
         )
-        if user_id is None:
+        if transaction is None:
             raise GmailError(
                 "This Gmail connection link expired or does not belong to the signed-in account. Start again."
             )
+        if not transaction.code_verifier:
+            raise GmailError("This Gmail connection link is incomplete. Start the connection again.")
         try:
-            flow = self._flow()
+            flow = self._flow(code_verifier=transaction.code_verifier)
             flow.fetch_token(code=code)
             payload = flow.credentials.to_json().encode("utf-8")
             encrypted_payload = self._cipher().encrypt(payload).decode("utf-8")
-            self.database.save_oauth_token(user_id, PROVIDER, encrypted_payload)
+            self.database.save_oauth_token(transaction.user_id, PROVIDER, encrypted_payload)
         except GmailError:
             raise
         except Exception as error:
             raise GmailError("Google did not complete the Gmail connection. Please try again.") from error
-        return user_id
+        return transaction.user_id
 
     def is_connected(self, user_id: int) -> bool:
         return self.database.get_oauth_token(user_id, PROVIDER) is not None
@@ -227,6 +239,11 @@ def _clean_body(value: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > MAX_BODY_LENGTH:
         raise GmailError(f"Use an email message between 1 and {MAX_BODY_LENGTH} characters.")
     return value
+
+
+def _new_pkce_verifier() -> str:
+    """Create an RFC 7636 verifier retained only with the short-lived state."""
+    return secrets.token_urlsafe(64)
 
 
 def _parse_json_payload(payload: str) -> dict[str, Any]:

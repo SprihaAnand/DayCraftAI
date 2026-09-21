@@ -81,6 +81,9 @@ class DatabaseAndAuthTests(unittest.TestCase):
         other_user = self.auth.register("ben@example.com", "Ben", "AnotherPass456")
         state = self.database.create_oauth_state(owner.id)
         self.assertIsNone(self.database.consume_oauth_state(state, expected_user_id=other_user.id))
+        # A wrong-account callback must not burn a valid state; the callback
+        # tab can sign in to the account that initiated the connection and retry.
+        self.assertEqual(self.database.consume_oauth_state(state, expected_user_id=owner.id), owner.id)
         self.assertIsNone(self.database.consume_oauth_state(state, expected_user_id=owner.id))
 
 

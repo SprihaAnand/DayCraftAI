@@ -166,7 +166,10 @@ def _render_calendar_connection(calendar: CalendarService, user: AuthenticatedUs
                     icon=":material/open_in_new:",
                     width="stretch",
                 )
-                st.caption("Google returns here after approval. The one-time link belongs only to this DayCraft account.")
+                st.caption(
+                    "Google opens in a new tab. After approval, sign in there once to the same DayCraft account "
+                    "to finish securely, then return here and refresh."
+                )
             return
 
         st.caption("Finish the shared Google setup below to let Calendar protect real meetings in your plan.")
@@ -239,7 +242,10 @@ def _render_gmail_connection(gmail: GmailService, user: AuthenticatedUser) -> No
                     icon=":material/open_in_new:",
                     width="stretch",
                 )
-                st.caption("Google asks only for permission to send messages after you explicitly compose one here.")
+                st.caption(
+                    "Google opens in a new tab. After approval, sign in there once to the same DayCraft account "
+                    "to finish securely, then return here and refresh. Gmail requests send-only access."
+                )
             return
 
         st.caption("Finish the shared Google setup below before connecting Gmail send-only access.")

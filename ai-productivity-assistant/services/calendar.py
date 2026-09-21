@@ -8,6 +8,7 @@ the optional integration has not been configured yet.
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import UTC, datetime
 from typing import Any
 
@@ -57,7 +58,7 @@ class CalendarService:
         if not self.is_configured:
             raise CalendarError(self.configuration_message)
 
-    def _flow(self):
+    def _flow(self, *, code_verifier: str | None = None):
         self._ensure_configured()
         try:
             from google_auth_oauthlib.flow import Flow
@@ -72,12 +73,21 @@ class CalendarService:
                 "redirect_uris": [self.redirect_uri],
             }
         }
-        return Flow.from_client_config(client_config, scopes=[CALENDAR_SCOPE], redirect_uri=self.redirect_uri)
+        return Flow.from_client_config(
+            client_config,
+            scopes=[CALENDAR_SCOPE],
+            redirect_uri=self.redirect_uri,
+            code_verifier=code_verifier,
+            autogenerate_code_verifier=False,
+        )
 
     def authorization_url(self, user_id: int) -> str:
         """Create a one-time, database-backed OAuth state and authorization URL."""
-        flow = self._flow()
-        state = self.database.create_oauth_state(user_id, provider=PROVIDER)
+        code_verifier = _new_pkce_verifier()
+        flow = self._flow(code_verifier=code_verifier)
+        state = self.database.create_oauth_state(
+            user_id, provider=PROVIDER, code_verifier=code_verifier
+        )
         authorization_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
@@ -88,24 +98,26 @@ class CalendarService:
 
     def complete_authorization(self, state: str, code: str, *, expected_user_id: int) -> int:
         """Exchange an OAuth callback only for the user who initiated it."""
-        user_id = self.database.consume_oauth_state(
+        transaction = self.database.consume_oauth_transaction(
             state, expected_user_id=expected_user_id, expected_provider=PROVIDER
         )
-        if user_id is None:
+        if transaction is None:
             raise CalendarError(
                 "This Calendar connection link expired or does not belong to the signed-in account. Start again."
             )
+        if not transaction.code_verifier:
+            raise CalendarError("This Calendar connection link is incomplete. Start the connection again.")
         try:
-            flow = self._flow()
+            flow = self._flow(code_verifier=transaction.code_verifier)
             flow.fetch_token(code=code)
             payload = flow.credentials.to_json().encode("utf-8")
             encrypted_payload = self._cipher().encrypt(payload).decode("utf-8")
-            self.database.save_oauth_token(user_id, PROVIDER, encrypted_payload)
+            self.database.save_oauth_token(transaction.user_id, PROVIDER, encrypted_payload)
         except CalendarError:
             raise
         except Exception as error:
             raise CalendarError("Google did not complete the Calendar connection. Please try again.") from error
-        return user_id
+        return transaction.user_id
 
     def is_connected(self, user_id: int) -> bool:
         return self.database.get_oauth_token(user_id, PROVIDER) is not None
@@ -206,6 +218,11 @@ def parse_json_payload(payload: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Invalid credential payload")
     return value
+
+
+def _new_pkce_verifier() -> str:
+    """Create an RFC 7636 verifier retained only with the short-lived state."""
+    return secrets.token_urlsafe(64)
 
 
 def normalize_google_event(event: dict[str, Any]) -> dict[str, Any]:

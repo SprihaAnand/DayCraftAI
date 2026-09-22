@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import unittest
@@ -35,7 +36,7 @@ class MCPServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _validated_priority("urgent")
 
-    def test_mcp_calendar_event_validation_prevents_invalid_or_overnight_ranges(self) -> None:
+    def test_mcp_commitment_validation_prevents_invalid_or_overnight_ranges(self) -> None:
         event = _validated_local_event(
             "Protected writing",
             "2026-09-18",
@@ -49,8 +50,21 @@ class MCPServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _validated_local_event("Bad range", "2026-09-18", "11:00", "10:30", "General", "")
 
-    def test_mcp_server_builds_with_google_calendar_and_gmail_tools_available(self) -> None:
-        self.assertIsNotNone(build_server())
+    def test_mcp_server_builds_with_local_daycraft_tools_available(self) -> None:
+        server = build_server()
+        self.assertIsNotNone(server)
+        tool_names = {tool.name for tool in asyncio.run(server.list_tools())}
+        self.assertSetEqual(
+            tool_names,
+            {
+                "get_today_brief",
+                "list_open_tasks",
+                "create_task",
+                "complete_task",
+                "list_agenda",
+                "create_daycraft_event",
+            },
+        )
 
 
 if __name__ == "__main__":

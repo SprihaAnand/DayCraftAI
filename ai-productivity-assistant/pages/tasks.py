@@ -148,7 +148,7 @@ def _render_quick_capture(database: Database, user: AuthenticatedUser) -> None:
 
             if preview.commitments:
                 st.markdown("**Protected time**")
-                st.caption("These stay fixed while DayCraft fits flexible work around them. They are not sent to Google Calendar automatically.")
+                st.caption("These stay fixed while DayCraft fits flexible work around them.")
                 for index, item in enumerate(preview.commitments):
                     with st.container(border=True):
                         include = st.checkbox(

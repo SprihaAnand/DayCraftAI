@@ -65,6 +65,14 @@ def apply_theme() -> None:
             background: var(--dc-acid) !important;
             border-color: var(--dc-ink) !important;
         }
+        /* The sidebar sets light text globally; restore dark, readable text inside its neon sign-out action. */
+        [data-testid="stSidebar"] .st-key-sign_out button,
+        [data-testid="stSidebar"] .st-key-sign_out button * {
+            color: var(--dc-ink) !important;
+        }
+        [data-testid="stSidebar"] .st-key-sign_out button svg {
+            fill: currentColor !important;
+        }
         [data-testid="stSidebar"] [data-testid="stButton"] > button:hover {
             transform: translate(-1px, -1px);
             box-shadow: 4px 4px 0 var(--dc-ink);
@@ -226,8 +234,10 @@ def apply_theme() -> None:
         .st-key-planner_toolbar > div { min-width: 0; }
         .st-key-planner_toolbar [data-testid="stCaptionContainer"] { max-width: 18rem; }
         .dc-canvas-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin: 2.2rem 0 .85rem; }
-        .dc-canvas-label { margin-bottom: .5rem; color: var(--dc-navy); font-size: .7rem; font-weight: 850; letter-spacing: .1em; }
-        .st-key-plan_canvas_summary > div { border: 2px solid var(--dc-line) !important; border-radius: 4px !important; background: var(--dc-paper) !important; box-shadow: 4px 4px 0 var(--dc-line); }
+        .dc-canvas-label { margin-bottom: .8rem; color: var(--dc-navy); font-size: .7rem; font-weight: 850; letter-spacing: .1em; }
+        .st-key-plan_canvas_summary > div { padding: clamp(1.1rem, 2.4vw, 1.55rem) !important; border: 2px solid var(--dc-line) !important; border-radius: 4px !important; background: var(--dc-paper) !important; box-shadow: 4px 4px 0 var(--dc-line); }
+        .st-key-plan_canvas_summary [data-testid="stMetric"] { margin: .55rem 0; padding: 1.05rem 1.1rem; }
+        .st-key-plan_canvas_summary [data-testid="stCaptionContainer"] { padding-top: .35rem; line-height: 1.55; }
         .st-key-planner_time_canvas { min-width: 0; }
         .st-key-planner_time_summary { max-width: 48rem; margin-top: .9rem; }
 
@@ -269,6 +279,8 @@ def apply_theme() -> None:
             [data-testid="stAppViewContainer"] .main .block-container { padding: 1rem .9rem 3.25rem; }
             [data-testid="stNavigation"] { margin-bottom: .15rem; box-shadow: 3px 3px 0 var(--dc-line); }
             [data-testid="stMetric"] { padding: .8rem .85rem; box-shadow: 3px 3px 0 rgba(16, 18, 23, .92); }
+            .st-key-plan_canvas_summary > div { padding: 1rem !important; }
+            .st-key-plan_canvas_summary [data-testid="stMetric"] { margin: .45rem 0; padding: .9rem .95rem; }
             .dc-hero, .dc-card { padding: 1rem; box-shadow: 3px 3px 0 var(--dc-line); }
             .dc-today-hero, .dc-planner-hero { display: block; }
             .dc-today-status, .dc-blueprint-chip { margin-top: 1rem; }

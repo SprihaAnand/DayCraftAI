@@ -13,7 +13,6 @@ import streamlit as st
 from components.ai_session import ai_provider_label, render_ai_setup
 from services.ai import AIConfigurationError, AIPlanningError, AIService, DayPlanAdvice
 from services.auth import AuthenticatedUser
-from services.calendar import CalendarError, CalendarService
 from services.database import Database
 from services.planning import (
     ScheduleBlock,
@@ -137,8 +136,6 @@ def _event_tone(event: dict[str, Any]) -> str:
         return "template"
     if category == "break":
         return "break"
-    if source == "google":
-        return "google"
     if source == "planner":
         return "planner"
     if "meeting" in category or "collaboration" in category:
@@ -195,8 +192,7 @@ def _render_timeline(
         density = "compact" if event_end - event_start <= 35 or lanes > 2 else "standard"
         title = escape(str(event.get("title") or "Untitled block"))
         category = escape(str(event.get("category") or "DayCraft"))
-        source = str(event.get("source") or "").lower()
-        source_label = "Google Calendar" if source == "google" else category
+        source_label = category
         event_markup.append(
             f'<article class="dc-calendar-event" data-tone="{_event_tone(event)}" '
             f'data-density="{density}" '
@@ -249,7 +245,6 @@ def _render_timeline(
             <span><i class="dc-legend-dot dc-legend-task"></i>AI task block</span>
             <span><i class="dc-legend-dot dc-legend-break"></i>rhythm / break</span>
             <span><i class="dc-legend-dot dc-legend-commitment"></i>protected commitment</span>
-            <span><i class="dc-legend-dot dc-legend-google"></i>Google Calendar</span>
           </footer>
         </section>
         """,
@@ -298,7 +293,7 @@ def _replace_planner_blocks(
     *,
     note: str,
 ) -> None:
-    """Replace only regenerable DayCraft blocks; never manual or Google commitments."""
+    """Replace only regenerable DayCraft blocks; never protected commitments."""
     database.delete_planner_events(user.id, selected_date)
     for block in blocks:
         if block.source != "planner":
@@ -346,7 +341,7 @@ def _store_template_rhythm(
         user,
         selected_date,
         blocks,
-        note="A saved DayCraft schedule rhythm; it is not an external calendar event.",
+        note="A saved DayCraft schedule rhythm.",
     )
     return blocks
 
@@ -494,45 +489,26 @@ def _restore_saved_advice(database: Database, user: AuthenticatedUser, selected_
 def _render_schedule_list(
     database: Database,
     user: AuthenticatedUser,
-    calendar: CalendarService,
     events: list[dict[str, Any]],
 ) -> None:
     if not events:
         st.caption("The canvas above is a preview. Save a rhythm or build task blocks to make it your plan.")
         return
 
-    with st.expander("Schedule details and calendar actions", icon=":material/format_list_bulleted:"):
-        st.caption("Only a Sync action writes a DayCraft block to Google Calendar.")
+    with st.expander("Schedule details", icon=":material/format_list_bulleted:"):
         for event in events:
             with st.container(border=True):
                 details, actions = st.columns([0.78, 0.22], vertical_alignment="center")
                 with details:
                     st.markdown(f"**{event['start_time']}–{event['end_time']} · {event['title']}**")
-                    if event["source"] == "google":
-                        source = "Google Calendar · protected"
-                    elif event["source"] == "planner":
+                    if event["source"] == "planner":
                         source = f"DayCraft · {event['category']}"
                     else:
                         source = f"Protected commitment · {event['category']}"
                     st.caption(source)
                 with actions:
-                    if calendar.is_connected(user.id) and not event.get("external_id"):
-                        if st.button(
-                            "Sync",
-                            icon=":material/calendar_add_on:",
-                            key=f"sync_event_{event['id']}",
-                            width="stretch",
-                        ):
-                            try:
-                                calendar.push_event(user.id, event)
-                            except CalendarError as error:
-                                st.error(str(error))
-                            else:
-                                st.toast("Sent to Google Calendar", icon=":material/check_circle:")
-                                st.rerun()
-                    remove_label = "Hide" if event["source"] == "google" else "Remove"
                     if st.button(
-                        remove_label,
+                        "Remove",
                         icon=":material/close:",
                         key=f"remove_event_{event['id']}",
                         width="stretch",
@@ -590,7 +566,7 @@ def _render_plan_canvas_summary(
                 on_click=_open_focus,
                 width="stretch",
             )
-        st.caption("Sync is always explicit; a saved rhythm never sends anything externally.")
+        st.caption("This is your local plan. Saving a rhythm only changes DayCraft blocks.")
 
 
 def _scaled_preview_interval(
@@ -679,9 +655,7 @@ def _render_day_pace_picker() -> tuple[str, ScheduleTemplate]:
     return pace.name, get_schedule_template(pace.template_id)
 
 
-def render_planner(
-    database: Database, user: AuthenticatedUser, calendar: CalendarService, ai: AIService
-) -> None:
+def render_planner(database: Database, user: AuthenticatedUser, ai: AIService) -> None:
     """Render one natural flow: choose pace, protect reality, then build a written agenda."""
     st.session_state.setdefault(PACE_KEY, "Balanced")
     pace = get_day_pace(str(st.session_state[PACE_KEY]))
@@ -709,13 +683,6 @@ def render_planner(
         key="planner_toolbar",
     ):
         selected_date = st.date_input("Plan date", value=date.today(), key="plan_date", width=220)
-        with st.container(width="content"):
-            if calendar.is_connected(user.id):
-                st.badge("Google Calendar protected", color="green", icon=":material/calendar_month:")
-                st.caption("Imported commitments stay fixed.")
-            else:
-                st.badge("Calendar optional", color="blue", icon=":material/calendar_month:")
-                st.caption("Add time here or connect Google Calendar in Settings.")
         _add_commitment_form(database, user, selected_date)
         with st.popover("Edit hours", icon=":material/schedule:", width="stretch"):
             st.time_input("Start", key=WORKDAY_START_KEY)
@@ -734,7 +701,7 @@ def render_planner(
             icon=":material/bookmark_add:",
             width="stretch",
         )
-        st.caption("Replaces only DayCraft blocks; never commitments or an external calendar.")
+        st.caption("Replaces only DayCraft blocks; protected commitments stay untouched.")
     with action_right:
         if ai.is_configured:
             st.badge(f"{ai_provider_label(ai)} ready", color="green", icon=":material/auto_awesome:")
@@ -882,4 +849,4 @@ def render_planner(
                 width="stretch",
             )
 
-    _render_schedule_list(database, user, calendar, events)
+    _render_schedule_list(database, user, events)

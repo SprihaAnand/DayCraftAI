@@ -10,8 +10,6 @@ from unittest.mock import patch
 from streamlit.testing.v1 import AppTest
 
 from services.ai import DayPlanAdvice
-from services.auth import AuthService
-from services.calendar import CalendarService
 from services.database import Database
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -87,6 +85,24 @@ class AppSmokeTests(unittest.TestCase):
             app.switch_page(page_path).run()
             self.assertEqual(len(app.exception), 0, msg=f"{title} had a Streamlit exception")
 
+    def test_settings_has_no_external_calendar_or_mail_controls(self) -> None:
+        app = self._signed_in_app()
+        app.switch_page("app_pages/account_settings.py").run()
+
+        self.assertEqual(len(app.exception), 0)
+        blocked_labels = {
+            "Connect Google Calendar",
+            "Connect Gmail",
+            "Import upcoming events",
+            "Disconnect Calendar",
+            "Disconnect Gmail",
+            "Continue securely with Google",
+            "Send email now",
+            "Sync",
+        }
+        control_labels = {element.label for element in app.button}
+        self.assertFalse(blocked_labels & control_labels)
+
     def test_task_can_move_from_capture_to_a_generated_day_plan(self) -> None:
         app = self._signed_in_app(configure_ai=True)
         app.switch_page("app_pages/task_backlog.py").run()
@@ -151,7 +167,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(task_titles, {"workout", "read 10 pages"})
         self.assertEqual(event_titles, {"Lunch", "meeting"})
 
-    def test_a_saved_rhythm_creates_timed_breaks_without_touching_calendar_commitments(self) -> None:
+    def test_a_saved_rhythm_creates_timed_breaks_without_touching_protected_commitments(self) -> None:
         app = self._signed_in_app()
         database = Database(os.environ["DAYCRAFT_DATABASE_PATH"])
         user = database.get_user_by_email("taylor@example.com")
@@ -171,74 +187,6 @@ class AppSmokeTests(unittest.TestCase):
         events = database.list_events(user["id"])
         self.assertTrue(any(event["title"] == "Customer call" and event["source"] == "manual" for event in events))
         self.assertTrue(any(event["source"] == "planner" and event["category"] == "Break" for event in events))
-
-
-class GoogleCallbackAppTests(unittest.TestCase):
-    """Exercise the callback-tab login boundary without contacting Google."""
-
-    def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.previous_database_path = os.environ.get("DAYCRAFT_DATABASE_PATH")
-        self.previous_gemini_api_key = os.environ.get("GEMINI_API_KEY")
-        self.previous_openai_api_key = os.environ.get("OPENAI_API_KEY")
-        os.environ["DAYCRAFT_DATABASE_PATH"] = f"{self.temporary_directory.name}/oauth-ui-test.db"
-        os.environ["GEMINI_API_KEY"] = ""
-        os.environ["OPENAI_API_KEY"] = ""
-        self.database = Database(os.environ["DAYCRAFT_DATABASE_PATH"])
-        self.database.initialize()
-        auth = AuthService(self.database)
-        self.owner = auth.register("owner@example.com", "Owner", "StrongPass123")
-        self.other_user = auth.register("other@example.com", "Other", "AnotherPass456")
-
-    def tearDown(self) -> None:
-        if self.previous_database_path is None:
-            os.environ.pop("DAYCRAFT_DATABASE_PATH", None)
-        else:
-            os.environ["DAYCRAFT_DATABASE_PATH"] = self.previous_database_path
-        if self.previous_gemini_api_key is None:
-            os.environ.pop("GEMINI_API_KEY", None)
-        else:
-            os.environ["GEMINI_API_KEY"] = self.previous_gemini_api_key
-        if self.previous_openai_api_key is None:
-            os.environ.pop("OPENAI_API_KEY", None)
-        else:
-            os.environ["OPENAI_API_KEY"] = self.previous_openai_api_key
-        self.temporary_directory.cleanup()
-
-    def test_callback_requires_the_initiating_daycraft_account_before_exchange(self) -> None:
-        state = self.database.create_oauth_state(
-            self.owner.id,
-            provider="google_calendar",
-            code_verifier="A" * 43,
-        )
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30)
-        app.query_params.update({"code": "callback-code", "state": state})
-        app.run()
-
-        self.assertEqual(len(app.exception), 0)
-        self.assertEqual(app.query_params, {})
-        self.assertEqual(
-            app.session_state["pending_google_callback"], {"code": "callback-code", "state": state}
-        )
-        self.assertTrue(any("same DayCraft account" in item.value for item in app.info))
-
-        # A different signed-in account sees a recovery path, but cannot consume
-        # the original user's state or exchange their authorization code.
-        app.session_state["authenticated_user_id"] = self.other_user.id
-        app.run()
-        self.assertEqual(len(app.exception), 0)
-        self.assertTrue(any("different DayCraft account" in item.value for item in app.error))
-        self.assertEqual(
-            self.database.oauth_state_provider(state, expected_user_id=self.owner.id), "google_calendar"
-        )
-
-        app.session_state["authenticated_user_id"] = self.owner.id
-        with patch.object(CalendarService, "complete_authorization", return_value=self.owner.id) as complete:
-            app.run()
-        self.assertEqual(len(app.exception), 0)
-        complete.assert_called_once_with(state, "callback-code", expected_user_id=self.owner.id)
-        self.assertNotIn("pending_google_callback", app.session_state)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -102,7 +102,7 @@ def render_dashboard(database: Database, user: AuthenticatedUser, ai: AIService)
     with note:
         if task_blocks:
             st.markdown(
-                '<p class="dc-dashboard-note">Your schedule below is the source of truth. Sync only the blocks you explicitly want in Google Calendar.</p>',
+                '<p class="dc-dashboard-note">Your schedule below is the source of truth. Keep the next meaningful block protected and focused.</p>',
                 unsafe_allow_html=True,
             )
         elif ai.is_configured:

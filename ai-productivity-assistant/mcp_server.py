@@ -11,9 +11,7 @@ import os
 from datetime import date, time
 from typing import Any
 
-from services.calendar import CalendarService
 from services.database import Database
-from services.gmail import GmailService
 
 
 def _workspace() -> tuple[Database, dict[str, Any]]:
@@ -85,7 +83,7 @@ def build_server():
 
     @mcp.tool()
     def get_today_brief() -> dict[str, Any]:
-        """Return today’s actual task, focus, and calendar summary for the configured account."""
+        """Return today’s actual task, focus, and local agenda summary for the configured account."""
         database, user = _workspace()
         today = date.today()
         return {
@@ -145,32 +143,6 @@ def build_server():
         return database.list_events(int(user["id"]), start_date=agenda_day, end_date=agenda_day)
 
     @mcp.tool()
-    def get_google_connection_status() -> dict[str, bool]:
-        """Report Calendar/Gmail readiness for the configured account without exposing secrets."""
-        database, user = _workspace()
-        user_id = int(user["id"])
-        calendar = CalendarService(database)
-        gmail = GmailService(database)
-        return {
-            "calendar_configured": calendar.is_configured,
-            "calendar_connected": calendar.is_connected(user_id),
-            "gmail_configured": gmail.is_configured,
-            "gmail_connected": gmail.is_connected(user_id),
-        }
-
-    @mcp.tool()
-    def import_google_calendar_events(limit: int = 50) -> dict[str, Any]:
-        """Explicitly import upcoming Google Calendar commitments into this DayCraft account.
-
-        Requires the account owner to have connected Google Calendar in the DayCraft UI first. This reads the
-        connected calendar and updates local protected commitments; it never creates remote events.
-        """
-        database, user = _workspace()
-        calendar = CalendarService(database)
-        imported = calendar.import_upcoming(int(user["id"]), max_results=max(1, min(int(limit), 100)))
-        return {"imported_events": imported, "calendar_connected": True}
-
-    @mcp.tool()
     def create_daycraft_event(
         title: str,
         event_date: str,
@@ -179,7 +151,7 @@ def build_server():
         category: str = "General",
         notes: str = "",
     ) -> dict[str, Any]:
-        """Create a fixed local DayCraft commitment; it is not sent to Google Calendar automatically."""
+        """Create a fixed local DayCraft commitment without contacting an external service."""
         clean_title, parsed_date, clean_start, clean_end, clean_category, clean_notes = _validated_local_event(
             title, event_date, start_time, end_time, category, notes
         )
@@ -195,49 +167,6 @@ def build_server():
             is_fixed=True,
             source="manual",
         )
-
-    @mcp.tool()
-    def sync_daycraft_event_to_google(event_id: int, confirm: bool = False) -> dict[str, Any]:
-        """Send one local event to connected Google Calendar only with `confirm=true`.
-
-        This creates an external Calendar event. Call it with `confirm=false` first to receive the required
-        confirmation response; no Google write occurs until the caller explicitly confirms.
-        """
-        if not confirm:
-            return {
-                "confirmation_required": True,
-                "message": "Set confirm=true only after the user approves creating this Google Calendar event.",
-            }
-        database, user = _workspace()
-        user_id = int(user["id"])
-        event = database.get_event(user_id, int(event_id))
-        if not event:
-            raise ValueError("Event not found in the configured DayCraft workspace.")
-        calendar = CalendarService(database)
-        external_id = calendar.push_event(user_id, event)
-        return {"event_id": int(event["id"]), "google_event_id": external_id, "synced": True}
-
-    @mcp.tool()
-    def send_gmail_message(
-        to: str,
-        subject: str,
-        body: str,
-        confirm: bool = False,
-    ) -> dict[str, Any]:
-        """Send one Gmail message only with `confirm=true` after the user has approved it.
-
-        Gmail must first be connected through DayCraft Settings. DayCraft requests send-only permission and never
-        reads the inbox. The confirmation guard prevents an AI from treating email delivery as an implicit action.
-        """
-        if not confirm:
-            return {
-                "confirmation_required": True,
-                "message": "Set confirm=true only after the user approves sending this exact Gmail message.",
-            }
-        database, user = _workspace()
-        gmail = GmailService(database)
-        message_id = gmail.send_message(int(user["id"]), to=to, subject=subject, body=body)
-        return {"message_id": message_id, "sent": True}
 
     return mcp
 

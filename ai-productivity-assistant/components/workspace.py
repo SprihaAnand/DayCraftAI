@@ -8,11 +8,10 @@ from components.ai_session import current_ai_service
 from components.auth import active_user
 from services.ai import AIService
 from services.auth import AuthenticatedUser
-from services.calendar import CalendarService
 from services.database import Database
 
 
-def current_workspace() -> tuple[Database, AuthenticatedUser, CalendarService, AIService]:
+def current_workspace() -> tuple[Database, AuthenticatedUser, AIService]:
     """Build lightweight services for the signed-in user on the current rerun."""
     database = Database()
     database.initialize()
@@ -20,4 +19,4 @@ def current_workspace() -> tuple[Database, AuthenticatedUser, CalendarService, A
     if user is None:
         st.error("Your session has ended. Please sign in again.")
         st.stop()
-    return database, user, CalendarService(database), current_ai_service()
+    return database, user, current_ai_service()

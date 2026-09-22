@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from datetime import date, datetime, time
 from html import escape
@@ -14,6 +15,7 @@ from components.ai_session import ai_provider_label, render_ai_setup
 from services.ai import AIConfigurationError, AIPlanningError, AIService, DayPlanAdvice
 from services.auth import AuthenticatedUser
 from services.database import Database
+from services.icalendar import configured_timezone, export_icalendar
 from services.planning import (
     ScheduleBlock,
     ScheduleTemplate,
@@ -495,7 +497,8 @@ def _render_schedule_list(
         st.caption("The canvas above is a preview. Save a rhythm or build task blocks to make it your plan.")
         return
 
-    with st.expander("Schedule details", icon=":material/format_list_bulleted:"):
+    with st.expander("Schedule details and download", icon=":material/format_list_bulleted:"):
+        _render_icalendar_export(events)
         for event in events:
             with st.container(border=True):
                 details, actions = st.columns([0.78, 0.22], vertical_alignment="center")
@@ -515,6 +518,50 @@ def _render_schedule_list(
                     ):
                         database.delete_event(user.id, int(event["id"]))
                         st.rerun()
+
+
+def _render_icalendar_export(events: list[dict[str, Any]]) -> None:
+    """Offer a local .ics download without sending anything to a calendar."""
+    exportable = [event for event in events if event.get("id") is not None][:100]
+    if not exportable:
+        return
+    if len(events) > len(exportable):
+        st.caption("Choose up to 100 blocks per iCalendar download.")
+    labels = {
+        str(event["id"]): (
+            f"{event.get('start_time')}–{event.get('end_time')} · "
+            f"{event.get('title') or 'Untitled block'}"
+        )
+        for event in exportable
+    }
+    selected_ids = st.multiselect(
+        "Choose time blocks to download",
+        list(labels),
+        default=list(labels),
+        format_func=labels.__getitem__,
+        max_selections=100,
+        key=f"planner_ical_export_{exportable[0].get('event_date', 'day')}",
+        help="This only creates a file for your device. It never syncs or writes to an external calendar.",
+    )
+    selected_id_set = {
+        value for value in selected_ids if isinstance(value, str) and value in labels
+    }
+    selected = [event for event in exportable if str(event["id"]) in selected_id_set]
+    if not selected:
+        st.caption("Choose at least one block to prepare a download.")
+        return
+    timezone_name = configured_timezone(os.getenv("DAYCRAFT_TIMEZONE", "UTC"))
+    icalendar_bytes = export_icalendar(selected, timezone_name=timezone_name)
+    st.download_button(
+        "Download selected blocks (.ics)",
+        data=icalendar_bytes,
+        file_name=f"daycraft-{selected[0].get('event_date', 'schedule')}.ics",
+        mime="text/calendar;charset=utf-8",
+        icon=":material/download:",
+        key=f"planner_ical_download_{exportable[0].get('event_date', 'day')}",
+        width="stretch",
+    )
+    st.caption("Manual download only — no calendar account is connected or changed.")
 
 
 def _render_plan_canvas_summary(

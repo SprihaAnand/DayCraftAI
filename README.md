@@ -1,10 +1,10 @@
 # DayCraft
 
-DayCraft is an AI-first daily planner for people who want a usable day, not another pile of tasks. It combines a private task inbox, reviewable natural-language capture, protected calendar commitments, an AI-written agenda, a secondary visual time canvas, and a focused work timer.
+DayCraft is an AI-first daily planner for people who want a usable day, not another pile of tasks. It combines reviewable task capture, protected calendar commitments, an AI-written agenda, a secondary visual time canvas, and a focused work timer.
 
 The product flow is intentionally small:
 
-**Capture → choose a day pace → protect time → craft a written AI agenda → see it on the clock → focus → review.**
+**Capture → review → choose a day pace → protect time → craft a written AI agenda → see it on the clock → focus → review.**
 
 The interface is an original schedule-studio implementation informed by the real calendar canvas of [Morgen Schedule Builder](https://www.morgen.so/schedule-builder), the focused action hierarchy of [Calendly](https://calendly.com/), the contextual schedule-side-panel pattern seen in [Dribbble's scheduling explorations](https://dribbble.com/search/schedule-management-dashboard), and a restrained touch of the visual energy in [Spriha's portfolio](https://sprihaanand.github.io/MyPortfolio/). It does not copy their assets or interface.
 
@@ -13,6 +13,8 @@ The interface is an original schedule-studio implementation informed by the real
 - Email-and-password accounts with salted PBKDF2 password hashes.
 - Durable, user-scoped SQLite data. Sign back in with the same email and password to find your tasks, plans, focus sessions, and check-ins.
 - A review-first **Drop in your day** capture flow. Type a loose list such as `Lunch from 1 to 2, workout, meeting at 9 for half an hour, read 10 pages`; an explicit time range or a start plus duration becomes a protected commitment, while the remaining items stay flexible tasks. Nothing is stored until the user reviews and confirms it.
+- A Gemini-only **AI Inbox** for one bounded PDF, PNG/JPG/WEBP image, plain-text, or Markdown file at a time. Gemini is asked for a strict task/commitment-candidate shape; DayCraft validates the result locally and routes it through the same explicit review-before-save flow. Source-file bytes are not written to the DayCraft database, filesystem, session state, or logs.
+- Manual **iCalendar (.ics)** portability without an OAuth calendar connection: download selected local blocks as a timezone-aware RFC 5545 calendar file, or upload one small file to review safe, non-recurring timed events before creating selected fixed local commitments.
 - Three intentional day paces — **Chill**, **Balanced**, and **Work-heavy**. They set the deterministic template, capacity, and transition room so a person can say how full the day should feel without manually designing a calendar.
 - Gemini or OpenAI planning. An AI provider is required to craft a daily plan; DayCraft never silently substitutes a local heuristic for an AI-generated plan.
 - Session-only AI keys entered in the browser, plus deployment-owned environment keys. Browser keys are never written to SQLite, exported, or placed in URLs, and they are cleared on sign-out.
@@ -20,7 +22,7 @@ The interface is an original schedule-studio implementation informed by the real
 - Local schedule validation: AI can reference only task IDs from the submitted task list. DayCraft itself assigns time slots, preserves fixed commitments, and rejects model guidance that attempts to add times or move calendar reality.
 - A session-only **Ask DayCraft about today** coach beneath the plan. It uses the already configured AI provider, reads only a bounded selected-day summary, and cannot create, move, save, send, or otherwise change anything.
 - A local Model Context Protocol (MCP) server with user-scoped task and protected-commitment tools. It works only with the selected DayCraft workspace and does not send data to external services.
-- Focus sessions and Review are real features, not placeholder pages: Focus records durable minutes; Review turns real completion/focus/check-in data into trends.
+- Focus sessions and Review are real features, not placeholder pages: Focus records durable minutes; Review turns real completion/focus/check-in data into trends and includes a private 52-week completed-task activity calendar. It uses local DayCraft completion counts only, not GitHub, LeetCode, or another account's activity.
 
 ## Project layout
 
@@ -34,7 +36,7 @@ DayCraftAI/
     ├── app_pages/              # Today, Tasks, Focus, Review, Settings routes
     ├── components/             # auth, theme, session-only AI setup, workspace helpers
     ├── pages/                  # product workflows and page renderers
-    ├── services/               # SQLite, auth, planning, AI, and compatibility services
+    ├── services/               # SQLite, auth, planning, AI Inbox, and local iCalendar helpers
     ├── mcp_server.py           # local stdio MCP server
     ├── tests/                  # mocked integration, security, and UI smoke tests
     ├── .env.example            # safe local configuration template
@@ -57,7 +59,7 @@ Copy-Item ai-productivity-assistant\.env.example ai-productivity-assistant\.env
 streamlit run ai-productivity-assistant\app.py
 ```
 
-Open the URL Streamlit prints (normally `http://localhost:8501`). Create an account, use **Tasks → Drop in your day** to capture work in plain language, review the proposed tasks and commitments, then open **Today**. Choose **Chill**, **Balanced**, or **Work-heavy**, protect any remaining commitments, and select **Create my written plan**. Read the agenda first; the time canvas beneath it is the secondary clock view. The default local database is `ai-productivity-assistant/data/daycraft.db`; keep that directory on persistent storage if you want data to survive redeployments.
+Open the URL Streamlit prints (normally `http://localhost:8501`). Create an account, use **Tasks → Drop in your day** to capture work in plain language, or **Tasks → AI Inbox** to extract reviewable candidates from one supported file with Gemini. Review the proposed tasks and commitments, then open **Today**. Choose **Chill**, **Balanced**, or **Work-heavy**, protect any remaining commitments, and select **Create my written plan**. Read the agenda first; the time canvas beneath it is the secondary clock view. The default local database is `ai-productivity-assistant/data/daycraft.db`; keep that directory on persistent storage if you want data to survive redeployments.
 
 ### Refreshing and restarting locally
 
@@ -124,6 +126,23 @@ Do not hardcode a key in Python or commit `.env`. Gemini calls use the maintaine
 
 If a provider key is absent or the provider returns unusable planning output, DayCraft refuses to save a non-AI day plan and explains the problem. For a valid request, the provider creates the theme, priority order, and short task cues; DayCraft creates the exact, validated written agenda and calendar blocks locally. Lightweight Focus/Review coaching may show a local fallback because it cannot change your schedule.
 
+## Use the Gemini AI Inbox
+
+**AI Inbox is intentionally Gemini-only.** Choose Gemini and provide a Gemini API key through the active browser session or the deployment secret manager before using it; an OpenAI key is not used for file extraction.
+
+In **Tasks → AI Inbox**, choose one PDF, PNG/JPG/WEBP image, TXT, or Markdown file. DayCraft bounds uploads to 5 MB (and limits PDFs to 25 readable pages and text/Markdown to 30,000 characters), validates the filename, declared type, and file signature where applicable, then sends the one validated attachment to Gemini for candidate extraction. The attachment is treated as inert source material, not as instructions.
+
+Gemini returns a constrained JSON shape containing only task and same-day commitment candidates. DayCraft bounds and validates that response again, then shows it in the ordinary capture review form. You can edit, deselect, or discard candidates; no task or commitment is written until you explicitly confirm the review. DayCraft discards the source bytes after the request and does not persist them locally. Gemini is an external provider, so apply your own data-handling judgment before uploading sensitive content.
+
+## Exchange calendar files manually
+
+DayCraft does not connect to a calendar account for this feature and does not use Calendar OAuth. It supports a deliberately narrow local subset of [RFC 5545 iCalendar](https://www.rfc-editor.org/rfc/rfc5545):
+
+- In **Today**, select up to 100 local time blocks and download a `.ics` file. The export uses the configured IANA timezone (`DAYCRAFT_TIMEZONE`, falling back to `UTC` if invalid), RFC 5545 line folding, CRLF line endings, and timed `VEVENT` records.
+- In **Settings → Data & privacy**, upload one UTF-8 `.ics`/`.ical` file smaller than 512 KB. DayCraft previews only safe, non-recurring, same-day timed events, skips unsupported or duplicate candidates, and lets you select them. A confirmation checkbox is required before the selected events become fixed local commitments.
+
+Both actions are manual: downloading creates a file for your device, and importing creates local DayCraft commitments only. Neither action writes to or reads from an external calendar service.
+
 ## Use the MCP server
 
 The optional local MCP server lets a compatible AI client work with one DayCraft account over stdio. It is separate from the Streamlit website and takes the target identity from the process environment—not from tool parameters—so an LLM cannot switch accounts with a prompt.
@@ -145,14 +164,14 @@ See the [official MCP Python SDK documentation](https://github.com/modelcontextp
 
 ## How the product works
 
-1. **Capture** — In **Tasks**, use **Drop in your day** for a natural list or add one precise task manually. The parser is deterministic and bounded: only an explicit same-day range or a start plus duration is proposed as protected time. Review every item before it is saved.
+1. **Capture** — In **Tasks**, use **Drop in your day** for a natural list, **AI Inbox** for one Gemini-read file, or add one precise task manually. Typed capture is deterministic and bounded; AI Inbox produces constrained, locally revalidated candidates. In both cases, review every item before it is saved.
 2. **Choose a pace** — In **Today**, select **Chill**, **Balanced**, or **Work-heavy**. The pace controls a local template, task capacity, and transition buffer while retaining essential breaks and a closeout.
-3. **Protect time** — Add fixed commitments in **Today** or accept reviewed commitments from quick capture. These always win and can never be moved by AI.
+3. **Protect time** — Add fixed commitments in **Today**, accept reviewed commitments from capture, or manually import selected safe `.ics` events in **Settings → Data & privacy**. These always win and can never be moved by AI.
 4. **Craft the written agenda** — Gemini or OpenAI prioritizes only actual task IDs and supplies brief task cues. DayCraft’s local scheduler fits that order only inside verified template windows and around protected commitments, then presents the resulting text agenda first.
-5. **See the clock** — The vertical time canvas below the agenda mirrors those validated blocks. It is useful for scanning the day, but it does not replace the written plan.
+5. **See the clock or exchange it manually** — The vertical time canvas below the agenda mirrors those validated blocks. It is useful for scanning the day and can create a selected-block `.ics` download, but it does not replace the written plan or sync to an external calendar.
 6. **Ask safely** — Use **Ask DayCraft about today** for a short explanation or next-step suggestion. Its chat history stays in the browser session; it cannot modify tasks, protected time, or anything external.
 7. **Act** — Start a task-linked Focus timer from the plan. Completed minutes are persisted.
-8. **Review** — Add a short check-in and view trends based only on activity the user recorded.
+8. **Review** — Add a short check-in, view trends from activity you recorded, and scan the private 52-week completion heatmap. Each square represents one day; only your locally recorded completed-task count controls its green intensity.
 
 ## Verify the project
 
@@ -164,7 +183,7 @@ Run these commands from `ai-productivity-assistant`:
 .\.venv\Scripts\python.exe -m ruff check .
 ```
 
-The test suite uses mocked AI-provider requests, so it never consumes an API key. It covers account isolation, durable data, session-key UI flow, AI provider contracts and safety filtering, MCP user scoping, natural-language capture review rules, paced planner capacity, ordinary planner gap placement, built-in schedule templates, and all primary Streamlit routes.
+The test suite uses mocked AI-provider requests, so it never consumes an API key. It covers account isolation, durable data, session-key UI flow, AI provider contracts and safety filtering, Gemini AI Inbox upload/candidate validation and review boundaries, manual iCalendar parsing/export/timezone/deduplication behavior, user-scoped 52-week activity aggregation and its Streamlit rendering, MCP user scoping, natural-language capture review rules, paced planner capacity, ordinary planner gap placement, built-in schedule templates, and all primary Streamlit routes.
 
 ## Deployment and security notes
 
@@ -172,3 +191,4 @@ The test suite uses mocked AI-provider requests, so it never consumes an API key
 - Community Cloud does not guarantee persistence for local files. It can publish a useful preview, but the current SQLite backend is not sufficient for a public, durable multi-user deployment.
 - Rotate any API key that may have appeared in a previous Git commit. If the repository was shared, use your organization’s approved history-cleanup process.
 - SQLite is appropriate for a personal/self-hosted persistent volume. Before a public multi-user launch, use HTTPS, a managed relational database, a managed identity/OIDC provider with email verification and password reset, rate limiting, backups, centralized secrets, and logging.
+- AI Inbox source-file bytes are intentionally transient in DayCraft, but Gemini remains an external AI provider. Do not upload material you are not comfortable sending to the configured provider.

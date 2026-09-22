@@ -9,9 +9,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from components.ai_session import current_ai_service
 from components.theme import empty_state, page_intro
+from services.ai import AIConfigurationError, AIInboxError, AIProviderError
 from services.auth import AuthenticatedUser
 from services.database import Database
+from services.multimodal_inbox import InboxUploadError, validate_inbox_upload
 from services.task_capture import TaskCapturePreview, parse_task_capture
 
 CATEGORIES = ["General", "Deep work", "Work", "Personal", "Learning", "Admin", "Health"]
@@ -21,6 +24,8 @@ PRIORITIES = ["High", "Medium", "Low"]
 _CAPTURE_PREVIEW_KEY = "task_capture_preview"
 _CAPTURE_DATE_KEY = "task_capture_preview_date"
 _CAPTURE_VERSION_KEY = "task_capture_preview_version"
+_CAPTURE_ORIGIN_KEY = "task_capture_preview_origin"
+_CAPTURE_ORIGINS = {"quick capture", "AI Inbox"}
 
 
 def _urgency(task: dict[str, object]) -> int:
@@ -45,6 +50,15 @@ def _clear_quick_capture_preview() -> None:
     """Remove only the transient review data; nothing stored in the database changes."""
     st.session_state.pop(_CAPTURE_PREVIEW_KEY, None)
     st.session_state.pop(_CAPTURE_DATE_KEY, None)
+    st.session_state.pop(_CAPTURE_ORIGIN_KEY, None)
+
+
+def _store_capture_preview(preview: TaskCapturePreview, selected_date: date, *, origin: str) -> None:
+    """Keep candidates, never uploaded file bytes, until the person reviews them."""
+    st.session_state[_CAPTURE_PREVIEW_KEY] = preview
+    st.session_state[_CAPTURE_DATE_KEY] = selected_date.isoformat()
+    st.session_state[_CAPTURE_ORIGIN_KEY] = origin
+    st.session_state[_CAPTURE_VERSION_KEY] = int(st.session_state.get(_CAPTURE_VERSION_KEY, 0)) + 1
 
 
 def _capture_preview_date() -> date:
@@ -88,6 +102,88 @@ def _review_minutes(value: object) -> int | None:
     return minutes if 5 <= minutes <= 480 else None
 
 
+def _render_ai_inbox() -> None:
+    """Let a signed-in person extract bounded candidates from one transient file."""
+    with st.container(border=True, key="ai_inbox_card"):
+        st.subheader("AI Inbox", icon=":material/auto_awesome:", anchor=False)
+        st.caption(
+            "Upload one PDF, image, text, or Markdown file. Gemini extracts candidates only; "
+            "you review every item before DayCraft saves anything."
+        )
+        uploaded_file = st.file_uploader(
+            "Upload a file for Gemini to read",
+            type=["pdf", "png", "jpg", "jpeg", "webp", "txt", "md", "markdown"],
+            accept_multiple_files=False,
+            max_upload_size=5,
+            key="ai_inbox_upload",
+            help="Maximum 5 MB. DayCraft does not save source-file bytes to your workspace.",
+        )
+        selected_date = st.date_input(
+            "Plan this date from the file",
+            value=date.today(),
+            key="ai_inbox_plan_date",
+            help="Only reviewed, explicit commitments are protected on this local DayCraft date.",
+        )
+        extract_requested = st.button(
+            "Extract candidates with Gemini",
+            type="primary",
+            icon=":material/document_scanner:",
+            key="ai_inbox_extract",
+        )
+        if not extract_requested:
+            return
+        if uploaded_file is None:
+            st.error("Choose one supported file before asking Gemini to extract candidates.")
+            return
+
+        raw_bytes: bytes | None = None
+        attachment = None
+        try:
+            raw_bytes = uploaded_file.getvalue()
+            attachment = validate_inbox_upload(
+                uploaded_file.name,
+                uploaded_file.type,
+                raw_bytes,
+            )
+            with st.spinner("Gemini is extracting reviewable task candidates…"):
+                preview = current_ai_service().extract_inbox_candidates(attachment)
+        except InboxUploadError as error:
+            st.error(str(error), icon=":material/error:")
+            return
+        except AIConfigurationError as error:
+            st.error(str(error), icon=":material/key_off:")
+            return
+        except (AIInboxError, AIProviderError):
+            st.error(
+                "Gemini could not extract safe task candidates from this file. Check the file and try again.",
+                icon=":material/error:",
+            )
+            return
+        except Exception:
+            st.error(
+                "DayCraft could not safely prepare this file for AI Inbox. Choose a supported file and try again.",
+                icon=":material/error:",
+            )
+            return
+        finally:
+            # The file is never persisted by DayCraft; discard this local copy
+            # immediately after the one Gemini request completes or fails.
+            if raw_bytes is not None:
+                del raw_bytes
+            if attachment is not None:
+                del attachment
+
+        if not preview.item_count:
+            for warning in preview.warnings:
+                st.warning(warning, icon=":material/info:")
+            return
+        _store_capture_preview(preview, selected_date, origin="AI Inbox")
+        st.success(
+            "Candidates are ready to review below. Nothing has been added to your workspace yet.",
+            icon=":material/fact_check:",
+        )
+
+
 def _render_quick_capture(database: Database, user: AuthenticatedUser) -> None:
     """Render a side-effect-free capture preview, then an explicit import review."""
     with st.container(border=True, key="quick_capture_card"):
@@ -120,11 +216,7 @@ def _render_quick_capture(database: Database, user: AuthenticatedUser) -> None:
                 for warning in preview.warnings:
                     st.warning(warning, icon=":material/info:")
             else:
-                st.session_state[_CAPTURE_PREVIEW_KEY] = preview
-                st.session_state[_CAPTURE_DATE_KEY] = selected_date.isoformat()
-                st.session_state[_CAPTURE_VERSION_KEY] = int(
-                    st.session_state.get(_CAPTURE_VERSION_KEY, 0)
-                ) + 1
+                _store_capture_preview(preview, selected_date, origin="quick capture")
 
     preview = st.session_state.get(_CAPTURE_PREVIEW_KEY)
     if not isinstance(preview, TaskCapturePreview):
@@ -132,11 +224,13 @@ def _render_quick_capture(database: Database, user: AuthenticatedUser) -> None:
 
     capture_date = _capture_preview_date()
     version = int(st.session_state.get(_CAPTURE_VERSION_KEY, 0))
+    stored_origin = st.session_state.get(_CAPTURE_ORIGIN_KEY)
+    capture_origin = stored_origin if stored_origin in _CAPTURE_ORIGINS else "quick capture"
     with st.container(border=True, key="quick_capture_review"):
         st.subheader("Review before adding", icon=":material/fact_check:", anchor=False)
         display_date = f"{capture_date:%A, %b} {capture_date.day}"
         st.caption(
-            f"Nothing has been saved yet. Review the {preview.item_count} item(s) for {display_date} "
+            f"Nothing has been saved from {capture_origin} yet. Review the {preview.item_count} item(s) for {display_date} "
             "and choose exactly what to add."
         )
         for warning in preview.warnings:
@@ -303,7 +397,7 @@ def _render_quick_capture(database: Database, user: AuthenticatedUser) -> None:
                         category=str(item["category"]),
                         due_date=capture_date,
                         estimated_minutes=_review_minutes(item["estimated_minutes"]) or 30,
-                        notes="Added through quick capture.",
+                        notes=f"Added through {capture_origin}.",
                     )
                 for item in selected_commitments:
                     database.create_event(
@@ -314,8 +408,8 @@ def _render_quick_capture(database: Database, user: AuthenticatedUser) -> None:
                         _time_to_storage(item["end"] if isinstance(item["end"], clock_time) else None),
                         category=str(item["category"]),
                         is_fixed=True,
-                        source="capture",
-                        notes="Protected time added through quick capture.",
+                        source="ai_inbox" if capture_origin == "AI Inbox" else "capture",
+                        notes=f"Protected time added through {capture_origin}.",
                     )
                 _clear_quick_capture_preview()
                 st.toast("Reviewed items added. Your planner can now place work around protected time.", icon=":material/check_circle:")
@@ -392,6 +486,7 @@ def render_tasks(database: Database, user: AuthenticatedUser) -> None:
         help="Your current estimate for all open tasks.",
     )
 
+    _render_ai_inbox()
     _render_quick_capture(database, user)
     _render_manual_task_capture(database, user)
 

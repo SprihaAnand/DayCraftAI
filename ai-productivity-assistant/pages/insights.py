@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
+from services.activity_calendar import (
+    WEEKDAY_LABELS,
+    build_completion_activity_calendar,
+    completion_activity_window,
+)
 from services.ai import AIService
 from services.auth import AuthenticatedUser
 from services.database import Database
@@ -125,6 +131,94 @@ def _render_first_use_guidance() -> None:
         st.caption("Your first trend appears from real activity only — DayCraft never fills in a story for you.")
 
 
+def _render_completion_activity_calendar(
+    database: Database,
+    user: AuthenticatedUser,
+    *,
+    today: date,
+) -> None:
+    """Render a 52-week heatmap from only this signed-in user's completed tasks."""
+    start_date, _ = completion_activity_window(today)
+    # ``daily_activity`` is user-scoped in the data layer. The calendar helper
+    # deliberately ignores focus minutes and every other field in these rows.
+    activity_rows = database.daily_activity(user.id, start_date, today)
+    cells = build_completion_activity_calendar(activity_rows, today=today)
+    completed_cells = [cell for cell in cells if cell.completed_tasks > 0 and not cell.is_future]
+
+    with st.container(border=True, key="insights_completion_calendar"):
+        st.subheader("Your completion activity", icon=":material/calendar_month:")
+        st.caption(
+            "Each square is one day from your private task history. Hover or tap a square for its date and completed-task count."
+        )
+        if not completed_cells:
+            st.info(
+                "No completed tasks in this 52-week window yet. Mark a task complete to begin your private activity calendar.",
+                icon=":material/task_alt:",
+            )
+            st.caption("This view never imports activity from GitHub, LeetCode, or another account.")
+            return
+
+        total_completed = sum(cell.completed_tasks for cell in completed_cells)
+        most_active = max(completed_cells, key=lambda cell: cell.completed_tasks)
+        max_completed = most_active.completed_tasks
+        st.markdown(
+            f"**{total_completed} tasks completed across {len(completed_cells)} active days.** "
+            f"Most active: {most_active.date_label} ({most_active.activity_label})."
+        )
+        st.caption(
+            "Legend: pale green = no completed tasks; darker green = more completed tasks; grey = upcoming day. "
+            "The shade scales to your own 52-week task history."
+        )
+
+        chart_frame = pd.DataFrame(
+            {
+                "week_index": [cell.week_index for cell in cells],
+                "weekday": [cell.weekday_label for cell in cells],
+                "completed_tasks": [cell.completed_tasks for cell in cells],
+                "is_future": [cell.is_future for cell in cells],
+                "date_label": [cell.date_label for cell in cells],
+                "activity_label": [cell.activity_label for cell in cells],
+            }
+        )
+        color_domain_max = max(4, max_completed)
+        heatmap = (
+            alt.Chart(chart_frame, title="52-week completed-task activity")
+            .mark_rect(stroke="#FFFFFF", strokeWidth=1)
+            .encode(
+                x=alt.X(
+                    "week_index:O",
+                    axis=None,
+                    scale=alt.Scale(paddingInner=0.18, paddingOuter=0.08),
+                ),
+                y=alt.Y(
+                    "weekday:O",
+                    sort=list(WEEKDAY_LABELS),
+                    axis=alt.Axis(title=None, labelPadding=8),
+                    scale=alt.Scale(paddingInner=0.18, paddingOuter=0.08),
+                ),
+                color=alt.condition(
+                    alt.datum.is_future,
+                    alt.value("#E5E7EB"),
+                    alt.Color(
+                        "completed_tasks:Q",
+                        scale=alt.Scale(
+                            domain=[0, color_domain_max],
+                            range=["#DCFCE7", "#86EFAC", "#22C55E", "#166534"],
+                        ),
+                        legend=None,
+                    ),
+                ),
+                tooltip=[
+                    alt.Tooltip("date_label:N", title="Date"),
+                    alt.Tooltip("activity_label:N", title="Completed tasks"),
+                ],
+            )
+            .properties(height=172)
+            .configure_view(stroke=None)
+        )
+        st.altair_chart(heatmap, width="stretch", key="insights_completion_heatmap")
+
+
 def render_insights(database: Database, user: AuthenticatedUser, ai: AIService) -> None:
     """Render supportive, evidence-based insights without fabricated activity."""
     end_date = date.today()
@@ -141,6 +235,7 @@ def render_insights(database: Database, user: AuthenticatedUser, ai: AIService) 
             key="insights_period",
             width="stretch",
         )
+    _render_completion_activity_calendar(database, user, today=end_date)
     days = 30 if period_label == "Last 30 days" else 7
     start_date = end_date - timedelta(days=days - 1)
     activity = database.daily_activity(user.id, start_date, end_date)

@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 
 from services.ai import DayPlanAdvice
 from services.database import Database
+from services.task_capture import CapturedCommitment, CapturedTask, TaskCapturePreview
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 
@@ -166,6 +167,60 @@ class AppSmokeTests(unittest.TestCase):
         event_titles = {event["title"] for event in database.list_events(user["id"])}
         self.assertEqual(task_titles, {"workout", "read 10 pages"})
         self.assertEqual(event_titles, {"Lunch", "meeting"})
+
+    def test_ai_inbox_keeps_uploaded_file_candidates_out_of_the_database_until_confirmed(self) -> None:
+        app = self._signed_in_app()
+        app.switch_page("app_pages/task_backlog.py").run()
+        inbox_preview = TaskCapturePreview(
+            tasks=(
+                CapturedTask(
+                    title="Draft launch brief",
+                    estimated_minutes=45,
+                    category="Deep work",
+                    priority="High",
+                ),
+            ),
+            commitments=(
+                CapturedCommitment(
+                    title="Client meeting",
+                    start_time="09:00",
+                    end_time="09:30",
+                    category="Meetings",
+                ),
+            ),
+        )
+        next(
+            uploader
+            for uploader in app.file_uploader
+            if uploader.label == "Upload a file for Gemini to read"
+        ).set_value(("inbox.md", b"# Inbox\nDraft the launch brief", "text/markdown")).run()
+
+        with patch("services.ai.AIService.extract_inbox_candidates", return_value=inbox_preview):
+            next(
+                button for button in app.button if button.label == "Extract candidates with Gemini"
+            ).click().run()
+        self.assertEqual(len(app.exception), 0)
+
+        database = Database(os.environ["DAYCRAFT_DATABASE_PATH"])
+        user = database.get_user_by_email("taylor@example.com")
+        self.assertFalse(database.list_tasks(user["id"]))
+        self.assertFalse(database.list_events(user["id"]))
+        self.assertTrue(any(item.label == "Add reviewed items" for item in app.button))
+
+        next(
+            checkbox
+            for checkbox in app.checkbox
+            if checkbox.label.startswith("I reviewed these items")
+        ).check()
+        next(button for button in app.button if button.label == "Add reviewed items").click().run()
+        self.assertEqual(len(app.exception), 0)
+
+        self.assertEqual(
+            {task["title"] for task in database.list_tasks(user["id"])}, {"Draft launch brief"}
+        )
+        saved_events = database.list_events(user["id"])
+        self.assertEqual({event["title"] for event in saved_events}, {"Client meeting"})
+        self.assertEqual(saved_events[0]["source"], "ai_inbox")
 
     def test_a_saved_rhythm_creates_timed_breaks_without_touching_protected_commitments(self) -> None:
         app = self._signed_in_app()

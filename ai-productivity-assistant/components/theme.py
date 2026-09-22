@@ -222,20 +222,26 @@ def apply_theme() -> None:
         .dc-rhythm-segment strong { overflow: hidden; font-size: .69rem; font-weight: 850; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; }
         .dc-rhythm-segment span { overflow: hidden; margin-top: .15rem; color: rgba(16,18,23,.68); font-family: "JetBrains Mono", monospace; font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
         .dc-planner-toolbar { margin: 1.2rem 0 .9rem; }
+        .st-key-planner_toolbar { align-items: flex-end; margin: 1.15rem 0 .9rem; }
+        .st-key-planner_toolbar > div { min-width: 0; }
+        .st-key-planner_toolbar [data-testid="stCaptionContainer"] { max-width: 18rem; }
         .dc-canvas-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin: 2.2rem 0 .85rem; }
         .dc-canvas-label { margin-bottom: .5rem; color: var(--dc-navy); font-size: .7rem; font-weight: 850; letter-spacing: .1em; }
         .st-key-plan_canvas_summary > div { border: 2px solid var(--dc-line) !important; border-radius: 4px !important; background: var(--dc-paper) !important; box-shadow: 4px 4px 0 var(--dc-line); }
+        .st-key-planner_time_canvas { min-width: 0; }
+        .st-key-planner_time_summary { max-width: 48rem; margin-top: .9rem; }
 
         /* Static schedule grid gives time its physical place in the plan. */
-        .dc-schedule-sheet { background: var(--dc-paper); border: 2px solid var(--dc-line); box-shadow: 5px 5px 0 var(--dc-line); }
-        .dc-schedule-sheet-header { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .72rem .85rem; color: var(--dc-paper); background: var(--dc-ink); border-bottom: 2px solid var(--dc-line); }
-        .dc-schedule-sheet-title { font-size: .81rem; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
-        .dc-schedule-sheet-meta { color: rgba(255,253,247,.74); font-size: .75rem; }
-        .dc-schedule-body { display: grid; grid-template-columns: 4.55rem minmax(0, 1fr); }
+        .dc-schedule-sheet { position: relative; isolation: isolate; min-width: 0; max-width: 100%; background: var(--dc-paper); border: 2px solid var(--dc-line); box-shadow: 5px 5px 0 var(--dc-line); }
+        .dc-schedule-sheet-header { position: relative; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .25rem .8rem; padding: .72rem .85rem; color: var(--dc-paper); background: var(--dc-ink); border-bottom: 2px solid var(--dc-line); }
+        .dc-schedule-sheet-title { min-width: 0; font-size: .81rem; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
+        .dc-schedule-sheet-meta { min-width: 0; margin-left: auto; color: rgba(255,253,247,.74); font-size: .75rem; text-align: right; }
+        .dc-schedule-body { position: relative; z-index: 1; display: grid; grid-template-columns: 4.55rem minmax(0, 1fr); min-width: 0; overflow: hidden; }
         .dc-time-rail { position: relative; min-height: var(--dc-grid-height); border-right: 2px solid var(--dc-line); background: #F0EEE5; }
         .dc-time-label { position: absolute; right: .5rem; transform: translateY(-.58rem); color: var(--dc-muted); font-family: "JetBrains Mono", monospace; font-size: .69rem; font-weight: 650; }
-        .dc-time-label:last-child { transform: translateY(-1.05rem); }
-        .dc-time-grid { position: relative; min-height: var(--dc-grid-height); overflow: hidden; background-color: var(--dc-paper); background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--dc-hour-height) - 1px), rgba(16,18,23,.58) calc(var(--dc-hour-height) - 1px), rgba(16,18,23,.58) var(--dc-hour-height)), repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--dc-half-hour-height) - 1px), rgba(16,18,23,.13) calc(var(--dc-half-hour-height) - 1px), rgba(16,18,23,.13) var(--dc-half-hour-height)); }
+        .dc-time-label--start { transform: translateY(.34rem); }
+        .dc-time-label--end { transform: translateY(-1.05rem); }
+        .dc-time-grid { position: relative; min-width: 0; min-height: var(--dc-grid-height); overflow: hidden; background-color: var(--dc-paper); background-image: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--dc-hour-height) - 1px), rgba(16,18,23,.58) calc(var(--dc-hour-height) - 1px), rgba(16,18,23,.58) var(--dc-hour-height)), repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--dc-half-hour-height) - 1px), rgba(16,18,23,.13) calc(var(--dc-half-hour-height) - 1px), rgba(16,18,23,.13) var(--dc-half-hour-height)); }
         .dc-time-now-line { position: absolute; z-index: 3; left: 0; right: 0; height: 2px; background: var(--dc-coral); }
         .dc-calendar-event { position: absolute; z-index: 2; display: flex; flex-direction: column; gap: .08rem; min-width: 0; overflow: hidden; padding: .42rem .55rem; border: 2px solid var(--dc-line); border-radius: 2px; box-shadow: 2px 2px 0 rgba(16,18,23,.78); color: var(--dc-ink); }
         .dc-calendar-event[data-tone="planner"] { background: var(--dc-blue); color: var(--dc-paper); }
@@ -249,6 +255,8 @@ def apply_theme() -> None:
         .dc-calendar-event[data-tone="health"] { background: #CDEEDB; }
         .dc-event-title { overflow: hidden; font-size: .79rem; font-weight: 800; line-height: 1.08; text-overflow: ellipsis; white-space: nowrap; }
         .dc-event-meta { overflow: hidden; color: rgba(16,18,23,.72); font-family: "JetBrains Mono", monospace; font-size: .63rem; text-overflow: ellipsis; white-space: nowrap; }
+        .dc-calendar-event[data-density="compact"] { gap: 0; padding: .24rem .4rem; }
+        .dc-calendar-event[data-density="compact"] .dc-event-meta { display: none; }
         .dc-schedule-empty { display: flex; min-height: 430px; align-items: center; justify-content: center; padding: 1.2rem; text-align: center; color: var(--dc-muted); background: var(--dc-paper); border: 2px dashed var(--dc-line); }
         .dc-schedule-empty strong { display: block; color: var(--dc-ink); margin-bottom: .3rem; }
         .dc-schedule-legend { display: flex; flex-wrap: wrap; gap: .45rem .8rem; padding: .6rem .85rem; border-top: 2px solid var(--dc-line); color: var(--dc-muted); font-size: .72rem; }
@@ -266,6 +274,11 @@ def apply_theme() -> None:
             .dc-today-status, .dc-blueprint-chip { margin-top: 1rem; }
             .dc-canvas-heading { display: block; }
             .dc-canvas-heading p { margin-top: .35rem; }
+            .st-key-planner_toolbar { gap: .75rem !important; }
+            .st-key-planner_toolbar [data-testid="stCaptionContainer"] { max-width: 100%; }
+            .st-key-planner_time_summary { max-width: none; }
+            .dc-schedule-sheet-header { align-items: flex-start; }
+            .dc-schedule-sheet-meta { width: 100%; margin-left: 0; text-align: left; }
             .dc-schedule-body { grid-template-columns: 3.7rem minmax(0, 1fr); }
             .dc-time-label { font-size: .62rem; right: .25rem; }
             .dc-calendar-event { padding: .34rem .38rem; }

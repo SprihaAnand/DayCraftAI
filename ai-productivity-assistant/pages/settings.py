@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from typing import NamedTuple
+from urllib.parse import urlsplit
 
 import streamlit as st
 from cryptography.fernet import Fernet
@@ -13,6 +15,85 @@ from services.auth import AuthenticatedUser
 from services.calendar import CalendarError, CalendarService
 from services.database import Database
 from services.gmail import GmailError, GmailService
+
+
+class RedirectPreflight(NamedTuple):
+    """A safe, display-ready check of the configured Google callback URL."""
+
+    ready: bool
+    matched_current_app: bool | None
+    message: str
+
+
+def _origin(url: str, *, allow_path: bool = False) -> str | None:
+    """Return a normalized HTTP(S) origin from a safe app or callback URL."""
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return None
+    if not allow_path and parsed.path not in {"", "/"}:
+        return None
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _redirect_preflight(redirect_uri: str, current_url: str | None) -> RedirectPreflight:
+    """Catch stale or malformed OAuth callbacks before creating a Google flow.
+
+    The origin comparison deliberately permits a callback path, but blocks a
+    flow when a Cloud secret points at a different deployed app.  Google will
+    otherwise successfully finish consent and send the user to that old app.
+    """
+    configured_origin = _origin(redirect_uri)
+    if configured_origin is None:
+        return RedirectPreflight(
+            False,
+            None,
+            "The configured Google callback is not a plain http(s) URL. Use the exact app URL, without "
+            "Markdown brackets, a query string, or a fragment.",
+        )
+
+    if configured_origin == "https://share.streamlit.io":
+        return RedirectPreflight(
+            False,
+            None,
+            "The Google callback points to Streamlit's dashboard, not your DayCraft app. Use this app's "
+            "public https://…streamlit.app URL instead.",
+        )
+
+    current_origin = _origin(current_url or "", allow_path=True)
+    if current_origin and configured_origin != current_origin:
+        return RedirectPreflight(
+            False,
+            False,
+            "The configured Google callback belongs to a different app address. Update GOOGLE_REDIRECT_URI "
+            "to match the DayCraft URL open in this browser, then start a fresh Google connection.",
+        )
+
+    if current_origin:
+        return RedirectPreflight(
+            True,
+            True,
+            "The configured Google callback matches the DayCraft app open in this browser.",
+        )
+
+    return RedirectPreflight(
+        True,
+        None,
+        "The callback URL is formatted correctly. Open it in a private browser window to confirm it loads "
+        "the DayCraft sign-in screen before connecting Google.",
+    )
+
+
+def _current_app_url() -> str | None:
+    """Read the browser URL when the Streamlit runtime exposes it."""
+    try:
+        return st.context.url
+    except AttributeError:
+        return None
 
 
 def _google_checks(connection: CalendarService | GmailService) -> list[tuple[str, bool, str]]:
@@ -106,7 +187,9 @@ def _render_google_setup(connection: CalendarService | GmailService) -> None:
         )
 
 
-def _render_calendar_connection(calendar: CalendarService, user: AuthenticatedUser) -> None:
+def _render_calendar_connection(
+    calendar: CalendarService, user: AuthenticatedUser, *, callback_ready: bool
+) -> None:
     checks = _google_checks(calendar)
     local_setup_ready = all(is_ready for _, is_ready, _ in checks)
 
@@ -144,7 +227,7 @@ def _render_calendar_connection(calendar: CalendarService, user: AuthenticatedUs
                     st.rerun()
             return
 
-        if local_setup_ready:
+        if local_setup_ready and callback_ready:
             st.caption("Connect the Google account whose availability should shape your daily plan.")
             if st.button(
                 "Connect Google Calendar",
@@ -172,11 +255,21 @@ def _render_calendar_connection(calendar: CalendarService, user: AuthenticatedUs
                 )
             return
 
+        if local_setup_ready:
+            st.error(
+                "Fix the Google callback check above before connecting Calendar. This prevents Google from "
+                "returning to an old or inaccessible Streamlit app.",
+                icon=":material/link_off:",
+            )
+            return
+
         st.caption("Finish the shared Google setup below to let Calendar protect real meetings in your plan.")
         _render_google_status(checks)
 
 
-def _render_gmail_connection(gmail: GmailService, user: AuthenticatedUser) -> None:
+def _render_gmail_connection(
+    gmail: GmailService, user: AuthenticatedUser, *, callback_ready: bool
+) -> None:
     checks = _google_checks(gmail)
     local_setup_ready = all(is_ready for _, is_ready, _ in checks)
 
@@ -220,7 +313,7 @@ def _render_gmail_connection(gmail: GmailService, user: AuthenticatedUser) -> No
                 st.rerun()
             return
 
-        if local_setup_ready:
+        if local_setup_ready and callback_ready:
             st.caption("Connect Google to authorize send-only Gmail access. Your inbox remains inaccessible to DayCraft.")
             if st.button(
                 "Connect Gmail",
@@ -248,8 +341,47 @@ def _render_gmail_connection(gmail: GmailService, user: AuthenticatedUser) -> No
                 )
             return
 
+        if local_setup_ready:
+            st.error(
+                "Fix the Google callback check above before connecting Gmail. This prevents Google from "
+                "returning to an old or inaccessible Streamlit app.",
+                icon=":material/link_off:",
+            )
+            return
+
         st.caption("Finish the shared Google setup below before connecting Gmail send-only access.")
         _render_google_status(checks)
+
+
+def _render_google_callback_preflight(calendar: CalendarService) -> bool:
+    """Render the visible Cloud/OAuth check before either Google connection."""
+    redirect_uri = calendar.redirect_uri
+    preflight = _redirect_preflight(redirect_uri, _current_app_url())
+
+    with st.container(border=True):
+        st.subheader("Google callback check", icon=":material/route:")
+        st.caption("Google must return to the same public DayCraft address that you are using now.")
+        if redirect_uri:
+            st.code(redirect_uri, language=None)
+        if preflight.ready:
+            if preflight.matched_current_app:
+                st.success(preflight.message, icon=":material/check_circle:")
+            else:
+                st.info(preflight.message, icon=":material/open_in_new:")
+            if _origin(redirect_uri):
+                st.link_button(
+                    "Open callback URL to verify",
+                    redirect_uri,
+                    icon=":material/open_in_new:",
+                    width="content",
+                )
+        else:
+            st.error(preflight.message, icon=":material/error:")
+            st.caption(
+                "In Streamlit Community Cloud, update `GOOGLE_REDIRECT_URI` in App settings → Secrets, "
+                "reboot the app, close older Google tabs, then create a new connection link here."
+            )
+    return preflight.ready
 
 
 def render_settings(database: Database, user: AuthenticatedUser, calendar: CalendarService) -> None:
@@ -281,9 +413,10 @@ def render_settings(database: Database, user: AuthenticatedUser, calendar: Calen
             "An email address identifies your DayCraft account, but Google access requires separate OAuth consent. "
             "Calendar and Gmail use the same secure app configuration while retaining distinct permissions."
         )
-        _render_calendar_connection(calendar, user)
+        callback_ready = _render_google_callback_preflight(calendar)
+        _render_calendar_connection(calendar, user, callback_ready=callback_ready)
         st.space("small")
-        _render_gmail_connection(gmail, user)
+        _render_gmail_connection(gmail, user, callback_ready=callback_ready)
         _render_google_setup(calendar)
 
     with data_tab:

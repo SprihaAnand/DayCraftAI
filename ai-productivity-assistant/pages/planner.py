@@ -162,7 +162,10 @@ def _render_timeline(
     start_of_day = work_start.hour * 60 + work_start.minute
     end_of_day = work_end.hour * 60 + work_end.minute
     total_minutes = max(1, end_of_day - start_of_day)
-    grid_height = max(520, min(900, round(total_minutes * 1.28)))
+    # A 30-minute block needs enough vertical room for a legible title.  The
+    # calendar is a secondary view, so a little more scroll is preferable to
+    # cramming its labels together.
+    grid_height = max(560, min(1020, round(total_minutes * 1.55)))
     hour_height = grid_height * 60 / total_minutes
     half_hour_height = hour_height / 2
 
@@ -174,7 +177,10 @@ def _render_timeline(
         labels = [*labels, end_of_day]
 
     rail = "".join(
-        f'<span class="dc-time-label" style="top:{(value - start_of_day) / total_minutes * 100:.4f}%">'
+        f'<span class="dc-time-label'
+        f'{" dc-time-label--start" if value == start_of_day else ""}'
+        f'{" dc-time-label--end" if value == end_of_day else ""}'
+        f'" style="top:{(value - start_of_day) / total_minutes * 100:.4f}%">'
         f"{escape(_format_clock(value))}</span>"
         for value in labels
     )
@@ -186,12 +192,14 @@ def _render_timeline(
         lane_width = 100 / lanes
         left = lane * lane_width + 0.8
         width = max(1, lane_width - 1.6)
+        density = "compact" if event_end - event_start <= 35 or lanes > 2 else "standard"
         title = escape(str(event.get("title") or "Untitled block"))
         category = escape(str(event.get("category") or "DayCraft"))
         source = str(event.get("source") or "").lower()
         source_label = "Google Calendar" if source == "google" else category
         event_markup.append(
             f'<article class="dc-calendar-event" data-tone="{_event_tone(event)}" '
+            f'data-density="{density}" '
             f'style="top:{top:.4f}%;height:{height:.4f}%;left:{left:.4f}%;width:{width:.4f}%" '
             f'title="{title} · {escape(_format_clock(event_start))}–{escape(_format_clock(event_end))}">'
             f'<span class="dc-event-title">{title}</span>'
@@ -206,10 +214,11 @@ def _render_timeline(
         event_start, event_end = interval
         top = (event_start - start_of_day) / total_minutes * 100
         height = (event_end - event_start) / total_minutes * 100
+        density = "compact" if event_end - event_start <= 35 else "standard"
         title = escape(str(event.get("title") or "Open work window"))
         category = escape(str(event.get("category") or "Rhythm"))
         event_markup.append(
-            f'<article class="dc-calendar-event" data-tone="template" '
+            f'<article class="dc-calendar-event" data-tone="template" data-density="{density}" '
             f'style="top:{top:.4f}%;height:{height:.4f}%;left:.8%;width:98.4%">'
             f'<span class="dc-event-title">{title}</span>'
             f'<span class="dc-event-meta">{escape(_format_clock(event_start))} · {category} window</span>'
@@ -692,17 +701,21 @@ def render_planner(
     )
 
     selected_pace, selected_template = _render_day_pace_picker()
-    toolbar = st.columns([0.31, 0.31, 0.38], vertical_alignment="bottom")
-    with toolbar[0]:
-        selected_date = st.date_input("Plan date", value=date.today(), key="plan_date")
-    with toolbar[1]:
-        if calendar.is_connected(user.id):
-            st.badge("Google Calendar protected", color="green", icon=":material/calendar_month:")
-            st.caption("Imported commitments stay fixed.")
-        else:
-            st.badge("Calendar optional", color="blue", icon=":material/calendar_month:")
-            st.caption("Add time here or connect Google Calendar in Settings.")
-    with toolbar[2]:
+    with st.container(
+        horizontal=True,
+        wrap=True,
+        vertical_alignment="bottom",
+        gap="medium",
+        key="planner_toolbar",
+    ):
+        selected_date = st.date_input("Plan date", value=date.today(), key="plan_date", width=220)
+        with st.container(width="content"):
+            if calendar.is_connected(user.id):
+                st.badge("Google Calendar protected", color="green", icon=":material/calendar_month:")
+                st.caption("Imported commitments stay fixed.")
+            else:
+                st.badge("Calendar optional", color="blue", icon=":material/calendar_month:")
+                st.caption("Add time here or connect Google Calendar in Settings.")
         _add_commitment_form(database, user, selected_date)
         with st.popover("Edit hours", icon=":material/schedule:", width="stretch"):
             st.time_input("Start", key=WORKDAY_START_KEY)
@@ -835,8 +848,7 @@ def render_planner(
         "<div class=\"dc-canvas-heading\"><div><span class=\"dc-kicker\">SECONDARY TIME VIEW</span><h2>Your day on the clock</h2></div><p>The calendar view mirrors the written agenda above; it does not replace it.</p></div>",
         unsafe_allow_html=True,
     )
-    canvas, summary = st.columns([0.72, 0.28], gap="medium")
-    with canvas:
+    with st.container(key="planner_time_canvas"):
         _render_timeline(
             selected_date,
             canvas_events,
@@ -852,7 +864,8 @@ def render_planner(
                 f'<div class="dc-unscheduled"><strong>Still to place</strong>{chips}</div>',
                 unsafe_allow_html=True,
             )
-    with summary:
+
+    with st.container(key="planner_time_summary"):
         _render_plan_canvas_summary(
             canvas_events,
             work_start,

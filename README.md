@@ -71,7 +71,7 @@ This repository is prepared for [Streamlit Community Cloud](https://share.stream
 1. Commit and push the project to GitHub. Do **not** commit `.env`, a database, or any `secrets.toml` file.
 2. Open [Streamlit Community Cloud](https://share.streamlit.io/), connect GitHub, and choose **Create app**.
 3. Select repository `SprihaAnand/DayCraftAI`, branch `main`, and entry point `ai-productivity-assistant/app.py`.
-4. Choose a memorable subdomain, for example `daycraft-ai`. Its public URL will be `https://daycraft-ai.streamlit.app`.
+4. Choose a memorable subdomain. This deployment uses `daycraftai`, so its public URL is `https://daycraftai.streamlit.app`. If you later change the subdomain, update the Google callback everywhere in the same release.
 5. In **Advanced settings**, choose Python 3.12 and paste root-level TOML secrets. Start from [`secrets.toml.example`](ai-productivity-assistant/.streamlit/secrets.toml.example), replacing every placeholder. Do not put these values under a TOML section: DayCraft reads them as environment variables.
 6. Deploy, then set the app's sharing setting to public if Community Cloud does not already make it public.
 
@@ -90,7 +90,7 @@ GEMINI_MODEL = "gemini-3.8-flash"
 
 GOOGLE_CLIENT_ID = "replace-with-your-google-client-id"
 GOOGLE_CLIENT_SECRET = "replace-with-your-google-client-secret"
-GOOGLE_REDIRECT_URI = "https://daycraft-ai.streamlit.app"
+GOOGLE_REDIRECT_URI = "https://daycraftai.streamlit.app"
 DAYCRAFT_ENCRYPTION_KEY = "replace-with-a-new-fernet-key"
 DAYCRAFT_TIMEZONE = "Asia/Kolkata"
 ```
